@@ -7,6 +7,42 @@ import json
 app = Flask(__name__)
 CORS(app)
 
+def extract_video_urls(tweet_html):
+    """
+    Extract all available Twitter video qualities from the tweet HTML.
+    Returns a list of dicts: [{"url": ..., "bitrate": ...}, ...]
+    """
+    video_urls = []
+
+    # Look for video variants in JavaScript objects
+    try:
+        # Sometimes Twitter stores JSON in window.__INITIAL_STATE__ or <script type="application/ld+json">
+        # We'll try to extract video info from <script type="application/ld+json">
+        ld_json_match = re.findall(r'<script type="application/ld\+json">(.*?)</script>', tweet_html, re.DOTALL)
+        for js in ld_json_match:
+            data_json = json.loads(js)
+            # Only process if it's a videoObject
+            if data_json.get("@type") == "VideoObject":
+                url = data_json.get("contentUrl")
+                if url:
+                    video_urls.append({"url": url, "bitrate": 0})
+
+        # Fallback: search for "variants" JSON in the HTML
+        variants_match = re.findall(r'"variants":(\[.*?])', tweet_html)
+        for vm in variants_match:
+            variants = json.loads(vm)
+            for v in variants:
+                if v.get("content_type") == "video/mp4":
+                    video_urls.append({
+                        "url": v["url"].split("?")[0],  # clean URL
+                        "bitrate": v.get("bitrate", 0)
+                    })
+
+    except Exception as e:
+        print("Error extracting videos:", e)
+
+    return video_urls
+
 @app.route("/download", methods=["POST"])
 def download():
     data = request.get_json()
@@ -23,37 +59,21 @@ def download():
         r = requests.get(url, headers=headers)
         html = r.text
 
-        # Twitter video info is often in a JavaScript object called window.__INITIAL_STATE__
-        match = re.search(r'window\.__INITIAL_STATE__\s?=\s?({.*});', html)
-        video_urls = []
+        video_urls = extract_video_urls(html)
 
-        if match:
-            data_json = json.loads(match.group(1))
-            # Navigate JSON to find video variants (this may vary based on tweet structure)
-            try:
-                variants = data_json["entities"]["tweets"]
-                for tweet in variants.values():
-                    media = tweet.get("media", [])
-                    for m in media:
-                        if m.get("type") == "video":
-                            for variant in m["video_info"]["variants"]:
-                                if variant.get("content_type") == "video/mp4":
-                                    video_urls.append({
-                                        "url": variant["url"],
-                                        "bitrate": variant.get("bitrate", 0)
-                                    })
-            except Exception:
-                pass
+        # Remove duplicates
+        seen = set()
+        unique_videos = []
+        for v in video_urls:
+            if v["url"] not in seen:
+                seen.add(v["url"])
+                unique_videos.append(v)
 
-        # If we found video URLs, sort by bitrate descending
-        if video_urls:
-            video_urls = sorted(video_urls, key=lambda x: x["bitrate"], reverse=True)
-            return jsonify({"success": True, "videos": video_urls})
+        # Sort by bitrate descending
+        unique_videos.sort(key=lambda x: x.get("bitrate", 0), reverse=True)
 
-        # Fallback: og:video meta tag
-        match2 = re.search(r'<meta property="og:video" content="([^"]+)"', html)
-        if match2:
-            return jsonify({"success": True, "videos": [{"url": match2.group(1), "bitrate": 0}]})
+        if unique_videos:
+            return jsonify({"success": True, "videos": unique_videos})
 
         return jsonify({"success": False, "message": "Video not found"}), 404
 
