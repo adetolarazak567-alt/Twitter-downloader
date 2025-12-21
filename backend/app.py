@@ -12,11 +12,15 @@ CORS(app)
 # -----------------------------
 CACHE = {}
 CACHE_TTL = 300  # 5 minutes
+
 STATS = {
     "requests": 0,
     "cache_hits": 0
 }
 
+# -----------------------------
+# HELPERS
+# -----------------------------
 def normalize_twitter_url(url: str) -> str:
     if "x.com" in url:
         url = url.replace("x.com", "twitter.com")
@@ -25,6 +29,9 @@ def normalize_twitter_url(url: str) -> str:
     return url
 
 
+# -----------------------------
+# MAIN DOWNLOAD ENDPOINT
+# -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
     STATS["requests"] += 1
@@ -36,6 +43,10 @@ def download():
         return jsonify({"success": False, "message": "No URL provided"}), 400
 
     url = normalize_twitter_url(url)
+
+    if "/status/" not in url:
+        return jsonify({"success": False, "message": "Invalid Twitter video URL"}), 400
+
     now = time.time()
 
     # ✅ CACHE HIT
@@ -44,11 +55,31 @@ def download():
         return jsonify(CACHE[url]["data"])
 
     try:
+        # 🔥 CRITICAL OPTIONS FOR SENSITIVE VIDEOS
         ydl_opts = {
             "quiet": True,
             "skip_download": True,
-            "format": "bestvideo+bestaudio/best",
             "noplaylist": True,
+            "merge_output_format": "mp4",
+            "format": "bestvideo+bestaudio/best",
+
+            # 🔥 REQUIRED FOR SENSITIVE / NSFW VIDEOS
+            "extractor_args": {
+                "twitter": {
+                    "include_ext_tw_video": True,
+                    "include_ext_alt_text": False,
+                }
+            },
+
+            # 🔥 PRETEND TO BE A REAL BROWSER
+            "http_headers": {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Accept-Language": "en-US,en;q=0.9",
+            },
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -58,31 +89,39 @@ def download():
             videos = []
             for f in formats:
                 if (
-                    f.get("vcodec") != "none"
+                    f.get("ext") == "mp4"
+                    and f.get("vcodec") != "none"
                     and f.get("acodec") != "none"
-                    and f.get("ext") == "mp4"
                 ):
                     size = f.get("filesize") or f.get("filesize_approx") or 0
+                    height = f.get("height")
+
                     videos.append({
                         "url": f.get("url"),
-                        "height": f.get("height"),
-                        "quality": f"{f.get('height')}p" if f.get("height") else "unknown",
+                        "quality": f"{height}p" if height else "auto",
+                        "height": height,
                         "filesize": size,
                         "filesize_mb": round(size / 1024 / 1024, 2) if size else None,
-                        "bitrate": f.get("tbr", 0)
+                        "bitrate": f.get("tbr", 0),
                     })
 
             if not videos:
-                return jsonify({"success": False, "message": "Video not found"}), 404
+                return jsonify({
+                    "success": False,
+                    "message": "No downloadable video found"
+                }), 404
 
+            # Highest quality first
             videos.sort(key=lambda x: x["bitrate"], reverse=True)
 
             response = {
                 "success": True,
+                "title": info.get("title"),
                 "videos": videos,
                 "stats": STATS
             }
 
+            # SAVE TO CACHE
             CACHE[url] = {
                 "time": now,
                 "data": response
@@ -91,11 +130,14 @@ def download():
             return jsonify(response)
 
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
 
 
 # -----------------------------
-# STREAMING PROXY (WITH RANGE)
+# STREAMING PROXY (RANGE SAFE)
 # -----------------------------
 @app.route("/proxy")
 def proxy():
@@ -109,21 +151,28 @@ def proxy():
 
     r = requests.get(video_url, headers=headers, stream=True)
 
+    response_headers = {
+        "Content-Type": r.headers.get("Content-Type", "video/mp4"),
+        "Accept-Ranges": "bytes",
+    }
+
+    if "Content-Range" in r.headers:
+        response_headers["Content-Range"] = r.headers["Content-Range"]
+
     return Response(
         r.iter_content(chunk_size=8192),
         status=r.status_code,
-        content_type=r.headers.get("Content-Type", "video/mp4"),
-        headers={
-            "Accept-Ranges": "bytes",
-            "Content-Range": r.headers.get("Content-Range", ""),
-        }
+        headers=response_headers
     )
 
 
+# -----------------------------
+# STATS ENDPOINT
+# -----------------------------
 @app.route("/stats")
 def stats():
     return jsonify(STATS)
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run()
