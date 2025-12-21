@@ -1,6 +1,7 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import yt_dlp
+import requests
 
 app = Flask(__name__)
 CORS(app)
@@ -20,7 +21,6 @@ def download():
     if not url:
         return jsonify({"success": False, "message": "No URL provided"}), 400
 
-    # 🔥 FIX: normalize Twitter/X URLs
     url = normalize_twitter_url(url)
 
     try:
@@ -37,7 +37,6 @@ def download():
 
             videos = []
             for f in formats:
-                # MP4 video + audio only
                 if (
                     f.get("vcodec") != "none"
                     and f.get("acodec") != "none"
@@ -51,15 +50,29 @@ def download():
 
             if videos:
                 videos.sort(key=lambda x: x["bitrate"], reverse=True)
-                return jsonify({
-                    "success": True,
-                    "videos": videos
-                })
+                return jsonify({"success": True, "videos": videos})
 
         return jsonify({"success": False, "message": "Video not found"}), 404
 
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
+
+
+# 🔥 PROXY ENDPOINT (THIS FIXES PLAY + DOWNLOAD)
+@app.route("/proxy")
+def proxy():
+    video_url = request.args.get("url")
+    if not video_url:
+        return "No URL", 400
+
+    r = requests.get(video_url, stream=True)
+    return Response(
+        r.iter_content(chunk_size=8192),
+        content_type="video/mp4",
+        headers={
+            "Content-Disposition": "inline; filename=twitter-video.mp4"
+        }
+    )
 
 if __name__ == "__main__":
     app.run(debug=True)
