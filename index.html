@@ -55,19 +55,84 @@
     border-radius: 12px;
     margin-bottom: 15px;
   }
-  a.download-btn {
-    display: inline-block;
-    padding: 10px 20px;
-    background-color: #1da1f2;
-    color: #fff;
-    border-radius: 9999px;
-    text-decoration: none;
-    font-weight: bold;
-  }
+.download-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 18px;
+  background-color: #1da1f2;
+  color: #fff;
+  border-radius: 9999px;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 15px;
+  white-space: nowrap;   /* 🔥 prevents stretching */
+  max-width: max-content;/* 🔥 keeps it compact */
+}
+
+.download-btn:hover {
+  background-color: #1a8cd8; /* slightly darker */
+  transform: translateY(-2px); /* lift */
+  box-shadow: 0 6px 15px rgba(29,161,242,0.35);
+}
+
+.download-btn:active {
+  transform: translateY(0); /* press */
+  box-shadow: 0 3px 8px rgba(29,161,242,0.25);
+}
+.download-btn:hover span {
+  transform: translateY(2px);
+}
   #loader {
     text-align: center;
     margin-top: 20px;
   }
+  @media (max-width: 600px) {
+    .container {
+      padding: 20px 10px;
+    }
+    video {
+      max-width: 100%;
+    }
+    .download-btn {
+      width: 100%;
+      margin: 5px 0;
+    }
+  }
+  .loader {
+  border: 4px solid #192734;
+  border-top: 4px solid #1da1f2;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+  margin: 10px auto;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.progress {
+  width: 100%;
+  background: #0f1720;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-top: 10px;
+}
+
+.progress-bar {
+  height: 10px;
+  width: 0%;
+  background: #1da1f2;
+}
+#downloadLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+}
 </style>
 </head>
 <body>
@@ -75,11 +140,13 @@
   <h1>Twitter Video Downloader</h1>
   <input type="text" id="link" placeholder="Paste Twitter video URL here" />
   <button id="fetchBtn">Fetch Video</button>
-  <div id="loader" style="display:none;">Loading...</div>
-
+<div id="loader" style="display:none;">
+  <div class="loader"></div>
+</div>
   <div id="downloadCard" class="card" style="display:none;">
     <video id="videoPlayer" controls></video>
-    <a id="downloadBtn" class="download-btn">Download Video</a>
+    <div id="videoInfo" style="margin-bottom:10px;"></div>
+    <div id="downloadLinks"></div>
   </div>
 </div>
 
@@ -87,9 +154,16 @@
 const linkInput = document.getElementById("link");
 const fetchBtn = document.getElementById("fetchBtn");
 const videoPlayer = document.getElementById("videoPlayer");
-const downloadBtn = document.getElementById("downloadBtn");
 const loader = document.getElementById("loader");
 const downloadCard = document.getElementById("downloadCard");
+const downloadLinksDiv = document.getElementById("downloadLinks");
+const videoInfo = document.getElementById("videoInfo");
+
+const BACKEND = "YOUR_BACKEND_LINK";
+
+function formatMB(mb) {
+  return mb ? `${mb} MB` : "Unknown size";
+}
 
 fetchBtn.addEventListener("click", async () => {
   const url = linkInput.value.trim();
@@ -97,27 +171,65 @@ fetchBtn.addEventListener("click", async () => {
 
   loader.style.display = "block";
   downloadCard.style.display = "none";
+  downloadLinksDiv.innerHTML = "";
+  videoInfo.innerHTML = "";
 
   try {
-    const res = await fetch("https://YOUR-RENDER-BACKEND/download", {
+    const res = await fetch(`${BACKEND}/download`, {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({url})
+      body: JSON.stringify({ url })
     });
 
     const data = await res.json();
     loader.style.display = "none";
 
-    if(!data.success) return alert(data.message || "Video not found");
+    if (!data.success) return alert(data.message);
 
-    videoPlayer.src = data.url;
-    downloadBtn.href = data.url;
-    downloadBtn.download = "twitter-video.mp4";
+    const videos = data.videos;
+    const best = videos[0];
+
+    videoPlayer.src = `${BACKEND}/proxy?url=${encodeURIComponent(best.url)}`;
+
+    videoInfo.innerHTML = `
+      <strong>Available qualities:</strong> ${videos.length}<br>
+      <small>Cached requests saved: ${data.stats.cache_hits}</small>
+    `;
+
+    videos.forEach((v, i) => {
+      const wrap = document.createElement("div");
+
+      const a = document.createElement("a");
+      a.href = `${BACKEND}/proxy?url=${encodeURIComponent(v.url)}`;
+      a.className = "download-btn";
+      a.download = `twitter-${v.quality}.mp4`;
+      a.textContent = `Download ${v.quality} (${formatMB(v.filesize_mb)})`;
+
+      const progress = document.createElement("div");
+      progress.className = "progress";
+      progress.innerHTML = `<div class="progress-bar"></div>`;
+
+      a.addEventListener("click", () => {
+        const bar = progress.querySelector(".progress-bar");
+        bar.style.width = "0%";
+        let fake = 0;
+        const interval = setInterval(() => {
+          fake += 5;
+          bar.style.width = fake + "%";
+          if (fake >= 100) clearInterval(interval);
+        }, 200);
+      });
+
+      wrap.appendChild(a);
+      wrap.appendChild(progress);
+      downloadLinksDiv.appendChild(wrap);
+    });
+
     downloadCard.style.display = "block";
 
-  } catch(err) {
+  } catch (e) {
     loader.style.display = "none";
-    alert("Server error. Please try again later.");
+    alert("Server error");
   }
 });
 </script>
