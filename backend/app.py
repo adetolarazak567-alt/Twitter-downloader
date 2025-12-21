@@ -98,10 +98,13 @@ def download():
     # CACHE HIT
     if url in CACHE and now - CACHE[url]["time"] < CACHE_TTL:
         STATS["cache_hits"] += 1
-        return jsonify(CACHE[url]["data"])
+        cached_data = CACHE[url]["data"]
+        cached_data["stats"] = {"cache_hits": STATS["cache_hits"]}
+        return jsonify(cached_data)
 
     try:
         info = fetch_video_info(url)
+        info["stats"] = {"cache_hits": STATS["cache_hits"]}
         CACHE[url] = {"time": now, "data": info}
         return jsonify(info)
     except Exception as e:
@@ -151,6 +154,7 @@ def admin():
     password = request.args.get("password")
     if password != ADMIN_PASSWORD:
         return "Unauthorized", 401
+
     return render_template_string("""
 <!DOCTYPE html>
 <html lang="en">
@@ -176,11 +180,11 @@ button:hover { background:#0d8ae5; transform:translateY(-2px); box-shadow:0 5px 
 <h1>Admin Dashboard</h1>
 
 <div class="stats">
-<div class="card"><h2>Total Requests</h2><p>{{requests}}</p></div>
-<div class="card"><h2>Cache Hits</h2><p>{{cache_hits}}</p></div>
-<div class="card"><h2>Total Downloads</h2><p>{{downloads}}</p></div>
-<div class="card"><h2>Unique IPs</h2><p>{{unique_ips|length}}</p></div>
-<div class="card"><h2>Videos Served</h2><p>{{videos_served}}</p></div>
+<div class="card"><h2>Total Requests</h2><p id="totalRequests">{{requests}}</p></div>
+<div class="card"><h2>Cache Hits</h2><p id="cacheHits">{{cache_hits}}</p></div>
+<div class="card"><h2>Total Downloads</h2><p id="totalDownloads">{{downloads}}</p></div>
+<div class="card"><h2>Unique IPs</h2><p id="uniqueIps">{{unique_ips|length}}</p></div>
+<div class="card"><h2>Videos Served</h2><p id="videosServed">{{videos_served}}</p></div>
 </div>
 
 <canvas id="requestsChart" height="200"></canvas>
@@ -196,7 +200,7 @@ button:hover { background:#0d8ae5; transform:translateY(-2px); box-shadow:0 5px 
 <button onclick="fetchStats()">Refresh Stats</button>
 
 <script>
-const BACKEND = location.origin; // auto use current domain
+const BACKEND = location.origin;
 let logs = [];
 
 const ctx = document.getElementById('requestsChart').getContext('2d');
@@ -226,7 +230,6 @@ async function fetchStats(){
         }
         requestsChart.update();
 
-        // logs table
         const tbody = document.querySelector('#logsTable tbody');
         tbody.innerHTML = '';
         if(data.download_logs && data.download_logs.length){
