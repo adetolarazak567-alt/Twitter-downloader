@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, render_template_string
 from flask_cors import CORS
 import yt_dlp
 import requests
@@ -9,114 +9,131 @@ app = Flask(__name__)
 CORS(app)
 
 # -----------------------------
-# BASIC OPTIMIZATION SETTINGS
+# CACHE & STATS
 # -----------------------------
 CACHE = {}
-CACHE_TTL = 600  # 10 minutes
+CACHE_TTL = 600
 
 STATS = {
     "requests": 0,
     "cache_hits": 0,
-    "downloads": 0
+    "downloads": 0,
+    "unique_ips": set(),
+    "videos_served": 0
 }
+
+DOWNLOAD_LOGS = []
+ADMIN_PASSWORD = "razzyadminX567"
 
 # -----------------------------
 # HELPERS
 # -----------------------------
-def normalize_twitter_url(url):
+def normalize_twitter_url(url: str) -> str:
     return (
         url.replace("x.com", "twitter.com")
            .replace("mobile.twitter.com", "twitter.com")
     )
 
 # -----------------------------
-# VIDEO EXTRACTION (ROBUST)
+# SAFE EXTRACTION (PUBLIC + NSFW)
 # -----------------------------
-def extract_video(url):
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "nocheckcertificate": True,
-        "format": "bestvideo+bestaudio/best",
-        "merge_output_format": "mp4",
-        "extractor_args": {
-            "twitter": {
-                "include_ext_tw_video": True
+def fetch_video_info(url):
+    formats_to_try = [
+        "bestvideo+bestaudio/best",
+        "bv*+ba/b",
+        "best"
+    ]
+
+    last_error = None
+
+    for fmt in formats_to_try:
+        try:
+            ydl_opts = {
+                "quiet": True,
+                "skip_download": True,
+                "noplaylist": True,
+                "merge_output_format": "mp4",
+                "format": fmt,
+                "extractor_args": {
+                    "twitter": {
+                        "include_ext_tw_video": True
+                    }
+                },
+                "http_headers": {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
             }
-        },
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/122.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9"
-        }
-    }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
 
-    formats = info.get("formats", [])
-    videos = []
+            videos = []
+            for f in info.get("formats", []):
+                if f.get("ext") == "mp4" and f.get("url"):
+                    size = f.get("filesize") or f.get("filesize_approx") or 0
+                    videos.append({
+                        "url": f["url"],
+                        "quality": f"{f.get('height','auto')}p",
+                        "height": f.get("height"),
+                        "filesize_mb": round(size / 1024 / 1024, 2) if size else None,
+                        "bitrate": f.get("tbr", 0),
+                    })
 
-    for f in formats:
-        if (
-            f.get("ext") == "mp4"
-            and f.get("vcodec") != "none"
-            and f.get("acodec") != "none"
-        ):
-            size = f.get("filesize") or f.get("filesize_approx") or 0
-            videos.append({
-                "quality": f"{f.get('height', 'auto')}p",
-                "height": f.get("height"),
-                "url": f.get("url"),
-                "filesize_mb": round(size / 1024 / 1024, 2) if size else None,
-                "bitrate": f.get("tbr", 0)
-            })
+            if videos:
+                videos.sort(key=lambda x: x["bitrate"], reverse=True)
+                return {
+                    "success": True,
+                    "title": info.get("title"),
+                    "videos": videos
+                }
 
-    if not videos:
-        raise Exception("No downloadable video found")
-
-    videos.sort(key=lambda x: x["bitrate"], reverse=True)
+        except Exception as e:
+            last_error = str(e)
+            continue
 
     return {
-        "success": True,
-        "title": info.get("title"),
-        "videos": videos
+        "success": False,
+        "message": last_error or "Failed to extract video"
     }
 
 # -----------------------------
-# FETCH ENDPOINT
+# DOWNLOAD ENDPOINT
 # -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
     STATS["requests"] += 1
 
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     url = data.get("url")
 
     if not url:
-        return jsonify({"success": False, "message": "No URL"}), 400
+        return jsonify({"success": False, "message": "No URL provided"}), 400
 
     url = normalize_twitter_url(url)
     now = time.time()
 
-    # CACHE
     if url in CACHE and now - CACHE[url]["time"] < CACHE_TTL:
         STATS["cache_hits"] += 1
-        return jsonify(CACHE[url]["data"])
+        cached = CACHE[url]["data"]
+        cached["stats"] = {"cache_hits": STATS["cache_hits"]}
+        return jsonify(cached)
 
-    try:
-        info = extract_video(url)
-        CACHE[url] = {"time": now, "data": info}
-        return jsonify(info)
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+    result = fetch_video_info(url)
+
+    if result["success"]:
+        CACHE[url] = {"time": now, "data": result}
+        result["stats"] = {"cache_hits": STATS["cache_hits"]}
+        return jsonify(result)
+
+    return jsonify(result), 500
 
 # -----------------------------
-# STREAM PROXY (FAST + SAFE)
+# PROXY STREAM
 # -----------------------------
 @app.route("/proxy")
 def proxy():
@@ -125,6 +142,16 @@ def proxy():
         return "No URL", 400
 
     STATS["downloads"] += 1
+    STATS["videos_served"] += 1
+    STATS["unique_ips"].add(request.remote_addr)
+
+    DOWNLOAD_LOGS.append({
+        "ip": request.remote_addr,
+        "url": video_url,
+        "timestamp": int(time.time())
+    })
+    if len(DOWNLOAD_LOGS) > 100:
+        DOWNLOAD_LOGS.pop(0)
 
     headers = {}
     if "Range" in request.headers:
@@ -142,11 +169,47 @@ def proxy():
     )
 
 # -----------------------------
-# SIMPLE STATS (OPTIONAL)
+# ADMIN DASHBOARD
+# -----------------------------
+@app.route("/admin")
+def admin():
+    if request.args.get("password") != ADMIN_PASSWORD:
+        return "Unauthorized", 401
+
+    return render_template_string("""
+<!DOCTYPE html>
+<html>
+<head>
+<title>Admin Dashboard</title>
+<style>
+body{background:#0f1720;color:#fff;font-family:Segoe UI;padding:20px}
+.card{background:#192734;padding:20px;border-radius:12px;margin:10px;display:inline-block}
+</style>
+</head>
+<body>
+<h1>Admin Dashboard</h1>
+<div class="card">Requests: {{requests}}</div>
+<div class="card">Cache Hits: {{cache_hits}}</div>
+<div class="card">Downloads: {{downloads}}</div>
+<div class="card">Unique IPs: {{unique_ips|length}}</div>
+<div class="card">Videos Served: {{videos_served}}</div>
+</body>
+</html>
+""", **STATS)
+
+# -----------------------------
+# STATS API
 # -----------------------------
 @app.route("/stats")
 def stats():
-    return jsonify(STATS)
+    return jsonify({
+        "requests": STATS["requests"],
+        "cache_hits": STATS["cache_hits"],
+        "downloads": STATS["downloads"],
+        "unique_ips": list(STATS["unique_ips"]),
+        "videos_served": STATS["videos_served"],
+        "download_logs": DOWNLOAD_LOGS
+    })
 
 # -----------------------------
 # RUN
