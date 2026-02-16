@@ -203,8 +203,8 @@ def stats():
 
     s = c.fetchone()
 
-if not s:
-    s = (0, 0, 0, 0)
+    if not s:
+        s = (0, 0, 0, 0)
 
     c.execute("SELECT COUNT(*) FROM ips")
     unique_ips = c.fetchone()[0]
