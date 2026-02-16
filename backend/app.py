@@ -4,336 +4,283 @@ import yt_dlp
 import requests
 import time
 import os
-import sqlite3
 
-app = Flask(__name__)
+app = Flask(name)
 CORS(app)
+
+-----------------------------
+
+CACHE & STATS
+
+-----------------------------
+
+CACHE = {}  # url -> {"time": ts, "data": ...}
+CACHE_TTL = 600  # 10 min
+
+STATS = {
+"requests": 0,
+"cache_hits": 0,
+"downloads": 0,
+"unique_ips": set(),
+"videos_served": 0
+}
+
+DOWNLOAD_LOGS = []  # store last 100 downloads
 
 ADMIN_PASSWORD = "razzyadminX567"
 
-DB_FILE = "stats.db"
+-----------------------------
 
-# -----------------------------
-# DATABASE INIT
-# -----------------------------
-def init_db():
-    conn = sqlite3.connect(DB_FILE, timeout=10)
-    c = conn.cursor()
+HELPERS
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS stats (
-        id INTEGER PRIMARY KEY,
-        requests INTEGER DEFAULT 0,
-        downloads INTEGER DEFAULT 0,
-        cache_hits INTEGER DEFAULT 0,
-        videos_served INTEGER DEFAULT 0
-    )
-    """)
+-----------------------------
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS ips (
-        ip TEXT PRIMARY KEY
-    )
-    """)
+def normalize_twitter_url(url: str) -> str:
+if "x.com" in url:
+url = url.replace("x.com", "twitter.com")
+if "mobile.twitter.com" in url:
+url = url.replace("mobile.twitter.com", "twitter.com")
+return url
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ip TEXT,
-        url TEXT,
-        timestamp INTEGER
-    )
-    """)
-
-    c.execute("INSERT OR IGNORE INTO stats (id) VALUES (1)")
-
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# -----------------------------
-# STAT FUNCTIONS
-# -----------------------------
-def increment_stat(field):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(f"UPDATE stats SET {field} = {field} + 1 WHERE id = 1")
-    conn.commit()
-    conn.close()
-
-def save_ip(ip):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO ips (ip) VALUES (?)", (ip,))
-    conn.commit()
-    conn.close()
-
-def save_log(ip, url):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute(
-        "INSERT INTO logs (ip, url, timestamp) VALUES (?, ?, ?)",
-        (ip, url, int(time.time()))
-    )
-    conn.commit()
-    conn.close()
-
-# -----------------------------
-# CACHE
-# -----------------------------
-CACHE = {}
-CACHE_TTL = 600
-
-def normalize_twitter_url(url):
-    if "x.com" in url:
-        url = url.replace("x.com", "twitter.com")
-    if "mobile.twitter.com" in url:
-        url = url.replace("mobile.twitter.com", "twitter.com")
-    return url
-
-# -----------------------------
-# VIDEO FETCH
-# -----------------------------
 def fetch_video_info(url):
-    """Fetch both video and audio formats cleanly."""
+"""Fetch both public & sensitive videos."""
+ydl_opts = {
+"quiet": True,
+"skip_download": True,
+"noplaylist": True,
+"merge_output_format": "mp4",
+"format": "bestvideo+bestaudio/best",
+"extractor_args": {
+"twitter": {
+"include_ext_tw_video": True,
+"include_ext_alt_text": False
+}
+},
+"http_headers": {
+"User-Agent": (
+"Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+"AppleWebKit/537.36 (KHTML, like Gecko) "
+"Chrome/120.0.0.0 Safari/537.36"
+),
+"Accept-Language": "en-US,en;q=0.9",
+},
+}
 
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "merge_output_format": "mp4",
-        "format": "bestvideo+bestaudio/best",
-        "extractor_args": {
-            "twitter": {
-                "include_ext_tw_video": True,
-                "include_ext_alt_text": False
-            }
-        },
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    }
+with yt_dlp.YoutubeDL(ydl_opts) as ydl:  
+    info = ydl.extract_info(url, download=False)  
+    formats = info.get("formats", [])  
+    videos = []  
+    for f in formats:  
+        if f.get("ext") == "mp4" and f.get("vcodec") != "none" and f.get("acodec") != "none":  
+            size = f.get("filesize") or f.get("filesize_approx") or 0  
+            height = f.get("height")  
+            videos.append({  
+                "url": f.get("url"),  
+                "quality": f"{height}p" if height else "auto",  
+                "height": height,  
+                "filesize": size,  
+                "filesize_mb": round(size / 1024 / 1024, 2) if size else None,  
+                "bitrate": f.get("tbr", 0),  
+            })  
+    if not videos:  
+        raise Exception("No downloadable video found")  
+    videos.sort(key=lambda x: x["bitrate"], reverse=True)  
+    return {"success": True, "title": info.get("title"), "videos": videos}
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+-----------------------------
 
-        info = ydl.extract_info(url, download=False)
+DOWNLOAD ENDPOINT
 
-        formats = info.get("formats", [])
+-----------------------------
 
-        videos = []
-        audio = None
-
-        allowed_heights = [480, 720, 1080, 1440, 2160]
-
-        for f in formats:
-
-            size = f.get("filesize") or f.get("filesize_approx") or 0
-
-            # VIDEO FORMATS
-            if (
-                f.get("ext") == "mp4"
-                and f.get("vcodec") != "none"
-                and f.get("acodec") != "none"
-                and f.get("height") in allowed_heights
-            ):
-
-                height = f.get("height")
-
-                videos.append({
-                    "url": f.get("url"),
-                    "quality": f"{height}p",
-                    "height": height,
-                    "filesize": size,
-                    "filesize_mb": round(size / 1024 / 1024, 2) if size else None,
-                    "bitrate": f.get("tbr", 0),
-                    "type": "video"
-                })
-
-            # AUDIO FORMAT (best m4a/mp4 audio)
-            if (
-                f.get("acodec") != "none"
-                and f.get("vcodec") == "none"
-                and f.get("ext") in ["m4a", "mp4"]
-            ):
-                if not audio or f.get("abr", 0) > audio.get("bitrate", 0):
-
-                    audio = {
-                        "url": f.get("url"),
-                        "quality": "Audio",
-                        "height": 0,
-                        "filesize": size,
-                        "filesize_mb": round(size / 1024 / 1024, 2) if size else None,
-                        "bitrate": f.get("abr", 0),
-                        "type": "audio"
-                    }
-
-        # Remove duplicates by height
-        unique = {}
-        for v in videos:
-            h = v["height"]
-            if h not in unique or v["bitrate"] > unique[h]["bitrate"]:
-                unique[h] = v
-
-        videos = list(unique.values())
-
-        # Sort video qualities highest first
-        videos.sort(key=lambda x: x["height"], reverse=True)
-
-        # Add audio at bottom
-        if audio:
-            videos.append(audio)
-
-        if not videos:
-            raise Exception("No downloadable media found")
-
-        return {
-            "success": True,
-            "title": info.get("title"),
-            "videos": videos
-        }
-# -----------------------------
-# DOWNLOAD
-# -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
+STATS["requests"] += 1
+data = request.get_json()
+url = data.get("url")
+if not url:
+return jsonify({"success": False, "message": "No URL provided"}), 400
 
-    increment_stat("requests")
+url = normalize_twitter_url(url)  
+now = time.time()  
 
-    data = request.get_json(silent=True) or {}
-    url = data.get("url")
+# CACHE HIT  
+if url in CACHE and now - CACHE[url]["time"] < CACHE_TTL:  
+    STATS["cache_hits"] += 1  
+    cached_data = CACHE[url]["data"]  
+    cached_data["stats"] = {"cache_hits": STATS["cache_hits"]}  
+    return jsonify(cached_data)  
 
-    if not url:
-        return jsonify({"success": False, "message": "No URL provided"}), 400
+try:  
+    info = fetch_video_info(url)  
+    info["stats"] = {"cache_hits": STATS["cache_hits"]}  
+    CACHE[url] = {"time": now, "data": info}  
+    return jsonify(info)  
+except Exception as e:  
+    return jsonify({"success": False, "message": str(e)}), 500
 
-    url = normalize_twitter_url(url)
+-----------------------------
 
-    ip = request.remote_addr
-    save_ip(ip)
+PROXY FOR STREAMING
 
-    now = time.time()
+-----------------------------
 
-    if url in CACHE and now - CACHE[url]["time"] < CACHE_TTL:
-        increment_stat("cache_hits")
-        return jsonify(CACHE[url]["data"])
-
-    info = fetch_video_info(url)
-
-    CACHE[url] = {
-        "time": now,
-        "data": info
-    }
-
-    return jsonify(info)
-# -----------------------------
-# PROXY
-# -----------------------------
 @app.route("/proxy")
 def proxy():
+video_url = request.args.get("url")
+if not video_url:
+return "No URL", 400
 
-    video_url = request.args.get("url")
+STATS["downloads"] += 1  
+STATS["videos_served"] += 1  
+STATS["unique_ips"].add(request.remote_addr)  
 
-    if not video_url:
-        return jsonify({"success": False, "message": "No video URL"}), 400
+# log download  
+DOWNLOAD_LOGS.append({  
+    "ip": request.remote_addr,  
+    "url": video_url,  
+    "timestamp": int(time.time())  
+})  
+if len(DOWNLOAD_LOGS) > 100:  
+    DOWNLOAD_LOGS.pop(0)  
 
-    ip = request.remote_addr
+headers = {}  
+if "Range" in request.headers:  
+    headers["Range"] = request.headers["Range"]  
 
-    increment_stat("downloads")
-    increment_stat("videos_served")
+r = requests.get(video_url, headers=headers, stream=True)  
+response_headers = {  
+    "Content-Type": r.headers.get("Content-Type", "video/mp4"),  
+    "Accept-Ranges": "bytes",  
+}  
+if "Content-Range" in r.headers:  
+    response_headers["Content-Range"] = r.headers["Content-Range"]  
 
-    save_ip(ip)
-    save_log(ip, video_url)
+return Response(r.iter_content(chunk_size=8192), status=r.status_code, headers=response_headers)
 
-    r = requests.get(video_url, stream=True)
+-----------------------------
 
-    return Response(
-        r.iter_content(chunk_size=8192),
-        content_type="video/mp4"
-    )
+ADMIN DASHBOARD
 
-# -----------------------------
-# STATS
-# -----------------------------
+-----------------------------
+
+@app.route("/admin")
+def admin():
+password = request.args.get("password")
+if password != ADMIN_PASSWORD:
+return "Unauthorized", 401
+
+return render_template_string("""
+
+<!DOCTYPE html>  <html lang="en">  
+<head>  
+<meta charset="UTF-8">  
+<meta name="viewport" content="width=device-width, initial-scale=1.0">  
+<title>Admin Dashboard</title>  
+<style>  
+body { font-family: 'Segoe UI', sans-serif; background:#0f1720; color:#fff; margin:0; padding:20px; }  
+h1 { color:#1da1f2; text-align:center; margin-bottom:30px; }  
+.stats { display:flex; flex-wrap:wrap; gap:20px; justify-content:center; margin-bottom:40px; }  
+.card { background:#192734; padding:20px; border-radius:15px; min-width:150px; text-align:center; box-shadow:0 4px 15px rgba(0,0,0,0.5); transition: transform 0.2s, box-shadow 0.2s; }  
+.card:hover { transform: translateY(-5px); box-shadow:0 8px 25px rgba(29,161,242,0.45); }  
+.card h2 { margin:0 0 10px 0; font-size:18px; color:#fff; }  
+.card p { margin:0; font-size:24px; font-weight:600; }  
+button { display:block; margin:0 auto 40px auto; padding:12px 25px; border:none; border-radius:9999px; background:#1da1f2; color:#fff; cursor:pointer; font-weight:600; font-size:16px; transition:0.2s; }  
+button:hover { background:#0d8ae5; transform:translateY(-2px); box-shadow:0 5px 15px rgba(29,161,242,0.35); }  
+</style>  
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>  
+</head>  
+<body>  <h1>Admin Dashboard</h1>  <div class="stats">  
+<div class="card"><h2>Total Requests</h2><p id="totalRequests">{{requests}}</p></div>  
+<div class="card"><h2>Cache Hits</h2><p id="cacheHits">{{cache_hits}}</p></div>  
+<div class="card"><h2>Total Downloads</h2><p id="totalDownloads">{{downloads}}</p></div>  
+<div class="card"><h2>Unique IPs</h2><p id="uniqueIps">{{unique_ips|length}}</p></div>  
+<div class="card"><h2>Videos Served</h2><p id="videosServed">{{videos_served}}</p></div>  
+</div>  <canvas id="requestsChart" height="200"></canvas>
+
+<h2 style="text-align:center;">Download Logs</h2>  
+<table id="logsTable">  
+<thead>  
+<tr><th>#</th><th>IP Address</th><th>Video URL</th><th>Timestamp</th></tr>  
+</thead>  
+<tbody></tbody>  
+</table>  <button onclick="fetchStats()">Refresh Stats</button>
+
+<script>  
+const BACKEND = location.origin;  
+let logs = [];  
+  
+const ctx = document.getElementById('requestsChart').getContext('2d');  
+const requestsChart = new Chart(ctx, {  
+    type: 'line',  
+    data: { labels: [], datasets: [{ label: 'Requests Over Time', data: [], borderColor: '#1da1f2', backgroundColor: 'rgba(29,161,242,0.2)', tension:0.3, fill:true }] },  
+    options: { responsive:true, plugins:{legend:{display:true}}, scales:{y:{beginAtZero:true}} }  
+});  
+  
+async function fetchStats(){  
+    try{  
+        const res = await fetch(`${BACKEND}/stats`);  
+        const data = await res.json();  
+  
+        document.querySelector("#totalRequests").textContent = data.requests || 0;  
+        document.querySelector("#cacheHits").textContent = data.cache_hits || 0;  
+        document.querySelector("#totalDownloads").textContent = data.downloads || 0;  
+        document.querySelector("#uniqueIps").textContent = data.unique_ips ? data.unique_ips.length : 0;  
+        document.querySelector("#videosServed").textContent = data.videos_served || 0;  
+  
+        const now = new Date().toLocaleTimeString();  
+        requestsChart.data.labels.push(now);  
+        requestsChart.data.datasets[0].data.push(data.requests || 0);  
+        if(requestsChart.data.labels.length>10){  
+            requestsChart.data.labels.shift();  
+            requestsChart.data.datasets[0].data.shift();  
+        }  
+        requestsChart.update();  
+  
+        const tbody = document.querySelector('#logsTable tbody');  
+        tbody.innerHTML = '';  
+        if(data.download_logs && data.download_logs.length){  
+            data.download_logs.slice(-10).forEach((log,i)=>{  
+                const tr = document.createElement('tr');  
+                tr.innerHTML = `<td>${i+1}</td>  
+                                <td>${log.ip}</td>  
+                                <td><a href="${log.url}" target="_blank">${log.url}</a></td>  
+                                <td>${new Date(log.timestamp*1000).toLocaleString()}</td>`;  
+                tbody.appendChild(tr);  
+            });  
+        }  
+  
+    } catch(e){  
+        alert("Failed to fetch stats/logs");  
+    }  
+}  
+  
+fetchStats();  
+</script>  </body>  
+</html>  
+""", **STATS)  -----------------------------
+
+STATS ENDPOINT
+
+-----------------------------
+
 @app.route("/stats")
 def stats():
+return jsonify({
+"requests": STATS["requests"],
+"cache_hits": STATS["cache_hits"],
+"downloads": STATS["downloads"],
+"unique_ips": list(STATS["unique_ips"]),
+"videos_served": STATS["videos_served"],
+"download_logs": DOWNLOAD_LOGS
+})
 
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+-----------------------------
 
-    c.execute(
-        "SELECT requests, downloads, cache_hits, videos_served FROM stats WHERE id=1"
-    )
+RUN APP
 
-    s = c.fetchone()
+-----------------------------
 
-    if not s:
-        s = (0, 0, 0, 0)
-
-    c.execute("SELECT COUNT(*) FROM ips")
-    unique_ips = c.fetchone()[0]
-
-    c.execute(
-        "SELECT ip, url, timestamp FROM logs ORDER BY id DESC LIMIT 100"
-    )
-
-    logs = [
-        {
-            "ip": row[0],
-            "url": row[1],
-            "timestamp": row[2]
-        }
-        for row in c.fetchall()
-    ]
-
-    conn.close()
-
-    return jsonify({
-        "requests": s[0],
-        "downloads": s[1],
-        "cache_hits": s[2],
-        "videos_served": s[3],
-        "unique_ips": unique_ips,
-        "download_logs": logs
-    })
-
-# -----------------------------
-# RESET
-# -----------------------------
-@app.route("/admin/reset", methods=["POST"])
-def reset():
-
-    password = request.json.get("password")
-
-    if password != ADMIN_PASSWORD:
-
-        return jsonify({"success": False}), 401
-
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    c.execute(
-        "UPDATE stats SET requests=0, downloads=0, cache_hits=0, videos_served=0"
-    )
-
-    c.execute("DELETE FROM ips")
-
-    c.execute("DELETE FROM logs")
-
-    conn.commit()
-    conn.close()
-
-    return jsonify({"success": True})
-
-# -----------------------------
-# RUN
-# -----------------------------
-if __name__ == "__main__":
-
-    port = int(os.environ.get("PORT", 5000))
-
-    app.run(host="0.0.0.0", port=port)
+if name == "main":
+port = int(os.environ.get("PORT", 5000))
+app.run(host="0.0.0.0", port=port)
