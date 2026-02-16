@@ -99,8 +99,7 @@ def fetch_video_info(url):
 
     ydl_opts = {
         "quiet": True,
-        "skip_download": True,
-        "format": "bestvideo+bestaudio/best",
+        "skip_download": True
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -109,27 +108,53 @@ def fetch_video_info(url):
 
         formats = info.get("formats", [])
 
-        videos = []
+        video_map = {}
+        audio_format = None
+
+        allowed_heights = [480, 720, 1080, 1440, 2160]
 
         for f in formats:
 
-            if f.get("ext") == "mp4" and f.get("url"):
+            # VIDEO
+            if f.get("ext") == "mp4" and f.get("height") in allowed_heights and f.get("url"):
 
-                videos.append({
+                h = f.get("height")
+
+                size = f.get("filesize") or f.get("filesize_approx")
+
+                if h not in video_map:
+
+                    video_map[h] = {
+                        "url": f.get("url"),
+                        "quality": f"{h}p",
+                        "height": h,
+                        "filesize_mb": round(size / (1024*1024), 2) if size else None
+                    }
+
+            # AUDIO (m4a best)
+            if f.get("ext") in ["m4a", "mp4"] and f.get("acodec") != "none" and not audio_format:
+
+                size = f.get("filesize") or f.get("filesize_approx")
+
+                audio_format = {
                     "url": f.get("url"),
-                    "quality": f.get("format_note") or f"{f.get('height','')}p",
-                    "height": f.get("height") or 0,
-                    "filesize_mb": round(f.get("filesize", 0) / (1024*1024), 2) if f.get("filesize") else None
-                })
+                    "quality": "Audio",
+                    "height": 0,
+                    "filesize_mb": round(size / (1024*1024), 2) if size else None
+                }
+
+        videos = list(video_map.values())
 
         videos.sort(key=lambda x: x["height"], reverse=True)
+
+        if audio_format:
+            videos.append(audio_format)
 
         return {
             "success": True,
             "title": info.get("title"),
             "videos": videos
         }
-
 # -----------------------------
 # DOWNLOAD
 # -----------------------------
