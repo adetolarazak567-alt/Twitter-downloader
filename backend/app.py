@@ -113,12 +113,16 @@ def fetch_video_info(url):
 
         for f in formats:
 
-            if f.get("ext") == "mp4":
+            if f.get("ext") == "mp4" and f.get("url"):
 
                 videos.append({
                     "url": f.get("url"),
-                    "quality": f.get("format_note", "auto")
+                    "quality": f.get("format_note") or f"{f.get('height','')}p",
+                    "height": f.get("height") or 0,
+                    "filesize_mb": round(f.get("filesize", 0) / (1024*1024), 2) if f.get("filesize") else None
                 })
+
+        videos.sort(key=lambda x: x["height"], reverse=True)
 
         return {
             "success": True,
