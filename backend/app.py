@@ -136,7 +136,12 @@ def download():
 
     data = request.get_json()
 
-    url = normalize_twitter_url(data.get("url"))
+    url = data.get("url")
+
+    if not url:
+        return jsonify({"success": False, "message": "No URL provided"}), 400
+
+    url = normalize_twitter_url(url)
 
     ip = request.remote_addr
 
@@ -197,6 +202,9 @@ def stats():
     )
 
     s = c.fetchone()
+
+if not s:
+    s = (0, 0, 0, 0)
 
     c.execute("SELECT COUNT(*) FROM ips")
     unique_ips = c.fetchone()[0]
