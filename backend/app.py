@@ -96,10 +96,28 @@ def normalize_twitter_url(url):
 # VIDEO FETCH
 # -----------------------------
 def fetch_video_info(url):
+    """Fetch both video and audio formats cleanly."""
 
     ydl_opts = {
         "quiet": True,
-        "skip_download": True
+        "skip_download": True,
+        "noplaylist": True,
+        "merge_output_format": "mp4",
+        "format": "bestvideo+bestaudio/best",
+        "extractor_args": {
+            "twitter": {
+                "include_ext_tw_video": True,
+                "include_ext_alt_text": False
+            }
+        },
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -108,47 +126,71 @@ def fetch_video_info(url):
 
         formats = info.get("formats", [])
 
-        video_map = {}
-        audio_format = None
+        videos = []
+        audio = None
 
         allowed_heights = [480, 720, 1080, 1440, 2160]
 
         for f in formats:
 
-            # VIDEO
-            if f.get("ext") == "mp4" and f.get("height") in allowed_heights and f.get("url"):
+            size = f.get("filesize") or f.get("filesize_approx") or 0
 
-                h = f.get("height")
+            # VIDEO FORMATS
+            if (
+                f.get("ext") == "mp4"
+                and f.get("vcodec") != "none"
+                and f.get("acodec") != "none"
+                and f.get("height") in allowed_heights
+            ):
 
-                size = f.get("filesize") or f.get("filesize_approx")
+                height = f.get("height")
 
-                if h not in video_map:
+                videos.append({
+                    "url": f.get("url"),
+                    "quality": f"{height}p",
+                    "height": height,
+                    "filesize": size,
+                    "filesize_mb": round(size / 1024 / 1024, 2) if size else None,
+                    "bitrate": f.get("tbr", 0),
+                    "type": "video"
+                })
 
-                    video_map[h] = {
+            # AUDIO FORMAT (best m4a/mp4 audio)
+            if (
+                f.get("acodec") != "none"
+                and f.get("vcodec") == "none"
+                and f.get("ext") in ["m4a", "mp4"]
+            ):
+                if not audio or f.get("abr", 0) > audio.get("bitrate", 0):
+
+                    audio = {
                         "url": f.get("url"),
-                        "quality": f"{h}p",
-                        "height": h,
-                        "filesize_mb": round(size / (1024*1024), 2) if size else None
+                        "quality": "Audio",
+                        "height": 0,
+                        "filesize": size,
+                        "filesize_mb": round(size / 1024 / 1024, 2) if size else None,
+                        "bitrate": f.get("abr", 0),
+                        "type": "audio"
                     }
 
-            # AUDIO (m4a best)
-            if f.get("ext") in ["m4a", "mp4"] and f.get("acodec") != "none" and not audio_format:
+        # Remove duplicates by height
+        unique = {}
+        for v in videos:
+            h = v["height"]
+            if h not in unique or v["bitrate"] > unique[h]["bitrate"]:
+                unique[h] = v
 
-                size = f.get("filesize") or f.get("filesize_approx")
+        videos = list(unique.values())
 
-                audio_format = {
-                    "url": f.get("url"),
-                    "quality": "Audio",
-                    "height": 0,
-                    "filesize_mb": round(size / (1024*1024), 2) if size else None
-                }
-
-        videos = list(video_map.values())
-
+        # Sort video qualities highest first
         videos.sort(key=lambda x: x["height"], reverse=True)
 
-        if audio_format:
-            videos.append(audio_format)
+        # Add audio at bottom
+        if audio:
+            videos.append(audio)
+
+        if not videos:
+            raise Exception("No downloadable media found")
 
         return {
             "success": True,
