@@ -134,9 +134,8 @@ def download():
 
     increment_stat("requests")
 
-    data = request.get_json()
-
-    url = data.get("url")
+    data = request.get_json(silent=True) or {}
+url = data.get("url")
 
     if not url:
         return jsonify({"success": False, "message": "No URL provided"}), 400
@@ -172,13 +171,15 @@ def proxy():
 
     video_url = request.args.get("url")
 
+    if not video_url:
+        return jsonify({"success": False, "message": "No video URL"}), 400
+
     ip = request.remote_addr
 
     increment_stat("downloads")
     increment_stat("videos_served")
 
     save_ip(ip)
-
     save_log(ip, video_url)
 
     r = requests.get(video_url, stream=True)
