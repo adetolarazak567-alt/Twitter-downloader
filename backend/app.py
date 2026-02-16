@@ -17,7 +17,7 @@ DB_FILE = "stats.db"
 # DATABASE INIT
 # -----------------------------
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, timeout=10)
     c = conn.cursor()
 
     c.execute("""
