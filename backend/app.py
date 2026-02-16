@@ -135,7 +135,7 @@ def download():
     increment_stat("requests")
 
     data = request.get_json(silent=True) or {}
-url = data.get("url")
+    url = data.get("url")
 
     if not url:
         return jsonify({"success": False, "message": "No URL provided"}), 400
@@ -143,15 +143,12 @@ url = data.get("url")
     url = normalize_twitter_url(url)
 
     ip = request.remote_addr
-
     save_ip(ip)
 
     now = time.time()
 
     if url in CACHE and now - CACHE[url]["time"] < CACHE_TTL:
-
         increment_stat("cache_hits")
-
         return jsonify(CACHE[url]["data"])
 
     info = fetch_video_info(url)
@@ -162,7 +159,6 @@ url = data.get("url")
     }
 
     return jsonify(info)
-
 # -----------------------------
 # PROXY
 # -----------------------------
