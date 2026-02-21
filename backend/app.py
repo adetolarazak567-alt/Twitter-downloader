@@ -228,13 +228,15 @@ def download():
 
 
 # -----------------------------
-# PROXY (FIXED WITH FILENAME)
+# PROXY (PRO VERSION)
+# Preview OR Download mode
 # -----------------------------
 
 @app.route("/proxy")
 def proxy():
 
     video_url = request.args.get("url")
+    download_mode = request.args.get("download")
 
     if not video_url:
         return "No URL", 400
@@ -254,19 +256,21 @@ def proxy():
 
     r = requests.get(video_url, headers=headers, stream=True)
 
-    # 🔥 Generate random ToolifyX filename
-    import random, string
-    random_part = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    filename = f"ToolifyX Downloader-{random_part}.mp4"
-
     response_headers = {
         "Content-Type": r.headers.get("Content-Type", "video/mp4"),
         "Accept-Ranges": "bytes",
-        "Content-Disposition": f'attachment; filename="{filename}"'
     }
 
     if "Content-Range" in r.headers:
         response_headers["Content-Range"] = r.headers["Content-Range"]
+
+    # ONLY force filename if download mode
+    if download_mode == "1":
+        import random, string
+        random_part = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+        filename = f"ToolifyX Downloader-{random_part}.mp4"
+
+        response_headers["Content-Disposition"] = f'attachment; filename="{filename}"'
 
     return Response(
         r.iter_content(chunk_size=8192),
