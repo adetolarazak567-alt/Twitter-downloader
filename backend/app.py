@@ -228,7 +228,7 @@ def download():
 
 
 # -----------------------------
-# PROXY (ONLY stats changed)
+# PROXY (FIXED WITH FILENAME)
 # -----------------------------
 
 @app.route("/proxy")
@@ -254,9 +254,15 @@ def proxy():
 
     r = requests.get(video_url, headers=headers, stream=True)
 
+    # 🔥 Generate random ToolifyX filename
+    import random, string
+    random_part = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    filename = f"ToolifyX Downloader-{random_part}.mp4"
+
     response_headers = {
         "Content-Type": r.headers.get("Content-Type", "video/mp4"),
         "Accept-Ranges": "bytes",
+        "Content-Disposition": f'attachment; filename="{filename}"'
     }
 
     if "Content-Range" in r.headers:
