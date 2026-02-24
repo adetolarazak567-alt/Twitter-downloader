@@ -1,47 +1,65 @@
-from flask import Flask, request, jsonify, Response, render_template_string
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import yt_dlp
 import requests
 import time
 import os
 import sqlite3
+import random
+import string
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-# -----------------------------
-# DATABASE (NEW - permanent stats)
-# -----------------------------
-
 DB_FILE = "stats.db"
 ADMIN_PASSWORD = "razzyadminX567"
 
+
+# -----------------------------
+# DATABASE INIT
+# -----------------------------
+
 def init_db():
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
+    # Main stats
     c.execute("""
     CREATE TABLE IF NOT EXISTS stats (
         id INTEGER PRIMARY KEY,
         requests INTEGER DEFAULT 0,
         cache_hits INTEGER DEFAULT 0,
         downloads INTEGER DEFAULT 0,
-        videos_served INTEGER DEFAULT 0
+        videos_served INTEGER DEFAULT 0,
+        mb_served REAL DEFAULT 0
     )
     """)
 
+    # Unique IPs
     c.execute("""
     CREATE TABLE IF NOT EXISTS ips (
         ip TEXT PRIMARY KEY
     )
     """)
 
+    # Logs
     c.execute("""
     CREATE TABLE IF NOT EXISTS logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         ip TEXT,
         url TEXT,
         timestamp INTEGER
+    )
+    """)
+
+    # Daily stats
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS daily (
+        date TEXT PRIMARY KEY,
+        downloads INTEGER DEFAULT 0,
+        mb_served REAL DEFAULT 0
     )
     """)
 
@@ -54,70 +72,139 @@ init_db()
 
 
 # -----------------------------
-# STAT FUNCTIONS (NEW)
+# STAT FUNCTIONS
 # -----------------------------
 
-def increment_stat(field):
+def increment_stat(field, amount=1):
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute(f"UPDATE stats SET {field} = {field} + 1 WHERE id = 1")
+
+    c.execute(f"""
+        UPDATE stats
+        SET {field} = {field} + ?
+        WHERE id = 1
+    """, (amount,))
+
+    conn.commit()
+    conn.close()
+
+
+def increment_daily(mb):
+
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    c.execute("""
+        INSERT INTO daily(date, downloads, mb_served)
+        VALUES (?, 1, ?)
+        ON CONFLICT(date)
+        DO UPDATE SET
+            downloads = downloads + 1,
+            mb_served = mb_served + ?
+    """, (today, mb, mb))
+
     conn.commit()
     conn.close()
 
 
 def save_ip(ip):
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO ips (ip) VALUES (?)", (ip,))
+
+    c.execute(
+        "INSERT OR IGNORE INTO ips(ip) VALUES(?)",
+        (ip,)
+    )
+
     conn.commit()
     conn.close()
 
 
 def save_log(ip, url):
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute(
-        "INSERT INTO logs (ip, url, timestamp) VALUES (?, ?, ?)",
-        (ip, url, int(time.time()))
-    )
+
+    c.execute("""
+        INSERT INTO logs(ip,url,timestamp)
+        VALUES(?,?,?)
+    """, (ip, url, int(time.time())))
+
     conn.commit()
     conn.close()
 
 
 def get_stats():
+
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    c.execute("SELECT requests, cache_hits, downloads, videos_served FROM stats WHERE id=1")
+    c.execute("""
+        SELECT requests, cache_hits, downloads,
+               videos_served, mb_served
+        FROM stats WHERE id=1
+    """)
+
     stats = c.fetchone()
 
     c.execute("SELECT COUNT(*) FROM ips")
     unique_ips = c.fetchone()[0]
 
-    c.execute("SELECT ip, url, timestamp FROM logs ORDER BY id DESC LIMIT 100")
+    c.execute("""
+        SELECT date, downloads, mb_served
+        FROM daily
+        ORDER BY date DESC
+        LIMIT 30
+    """)
+
+    daily = c.fetchall()
+
+    c.execute("""
+        SELECT ip,url,timestamp
+        FROM logs
+        ORDER BY id DESC
+        LIMIT 100
+    """)
+
     logs = c.fetchall()
 
     conn.close()
 
     return {
+
         "requests": stats[0],
         "cache_hits": stats[1],
         "downloads": stats[2],
         "videos_served": stats[3],
+        "mb_served": round(stats[4], 2),
         "unique_ips": unique_ips,
-        "download_logs": [
+
+        "daily": [
             {
-                "ip": row[0],
-                "url": row[1],
-                "timestamp": row[2]
+                "date": d[0],
+                "downloads": d[1],
+                "mb_served": round(d[2], 2)
             }
-            for row in logs
+            for d in daily
+        ],
+
+        "logs": [
+            {
+                "ip": l[0],
+                "url": l[1],
+                "timestamp": l[2]
+            }
+            for l in logs
         ]
     }
 
 
 # -----------------------------
-# CACHE (UNCHANGED)
+# CACHE
 # -----------------------------
 
 CACHE = {}
@@ -125,70 +212,22 @@ CACHE_TTL = 600
 
 
 # -----------------------------
-# HELPERS (UNCHANGED)
+# HELPERS
 # -----------------------------
 
-def normalize_twitter_url(url: str) -> str:
+def normalize_twitter_url(url):
+
     if "x.com" in url:
         url = url.replace("x.com", "twitter.com")
+
     if "mobile.twitter.com" in url:
         url = url.replace("mobile.twitter.com", "twitter.com")
+
     return url
 
 
-def fetch_video_info(url):
-    """UNCHANGED"""
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "merge_output_format": "mp4",
-        "format": "bestvideo+bestaudio/best",
-        "extractor_args": {
-            "twitter": {
-                "include_ext_tw_video": True,
-                "include_ext_alt_text": False
-            }
-        },
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        formats = info.get("formats", [])
-        videos = []
-
-        for f in formats:
-            if f.get("ext") == "mp4" and f.get("vcodec") != "none" and f.get("acodec") != "none":
-                size = f.get("filesize") or f.get("filesize_approx") or 0
-                height = f.get("height")
-
-                videos.append({
-                    "url": f.get("url"),
-                    "quality": f"{height}p" if height else "auto",
-                    "height": height,
-                    "filesize": size,
-                    "filesize_mb": round(size / 1024 / 1024, 2) if size else None,
-                    "bitrate": f.get("tbr", 0),
-                })
-
-        if not videos:
-            raise Exception("No downloadable video found")
-
-        videos.sort(key=lambda x: x["bitrate"], reverse=True)
-
-        return {"success": True, "title": info.get("title"), "videos": videos}
-
-
 # -----------------------------
-# DOWNLOAD ENDPOINT (ONLY stats changed)
+# DOWNLOAD INFO
 # -----------------------------
 
 @app.route("/download", methods=["POST"])
@@ -200,7 +239,7 @@ def download():
     url = data.get("url")
 
     if not url:
-        return jsonify({"success": False, "message": "No URL provided"}), 400
+        return jsonify({"success": False}), 400
 
     url = normalize_twitter_url(url)
     now = time.time()
@@ -213,14 +252,39 @@ def download():
 
     try:
 
-        info = fetch_video_info(url)
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "format": "best"
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
+            info = ydl.extract_info(url, download=False)
+
+            videos = []
+
+            for f in info["formats"]:
+
+                if f.get("ext") == "mp4":
+
+                    videos.append({
+                        "url": f["url"],
+                        "quality": f.get("height", "auto"),
+                        "filesize": f.get("filesize", 0)
+                    })
+
+        result = {
+            "success": True,
+            "videos": videos
+        }
 
         CACHE[url] = {
             "time": now,
-            "data": info
+            "data": result
         }
 
-        return jsonify(info)
+        return jsonify(result)
 
     except Exception as e:
 
@@ -229,7 +293,6 @@ def download():
 
 # -----------------------------
 # PROXY (PRO VERSION)
-# Preview OR Download mode
 # -----------------------------
 
 @app.route("/proxy")
@@ -243,12 +306,6 @@ def proxy():
 
     ip = request.remote_addr
 
-    increment_stat("downloads")
-    increment_stat("videos_served")
-
-    save_ip(ip)
-    save_log(ip, video_url)
-
     headers = {}
 
     if "Range" in request.headers:
@@ -256,21 +313,39 @@ def proxy():
 
     r = requests.get(video_url, headers=headers, stream=True)
 
+    size_mb = 0
+
+    if "Content-Length" in r.headers:
+        size_mb = int(r.headers["Content-Length"]) / 1024 / 1024
+
+    # Update stats
+    increment_stat("downloads")
+    increment_stat("videos_served")
+    increment_stat("mb_served", size_mb)
+
+    increment_daily(size_mb)
+
+    save_ip(ip)
+    save_log(ip, video_url)
+
     response_headers = {
         "Content-Type": r.headers.get("Content-Type", "video/mp4"),
-        "Accept-Ranges": "bytes",
+        "Accept-Ranges": "bytes"
     }
 
     if "Content-Range" in r.headers:
         response_headers["Content-Range"] = r.headers["Content-Range"]
 
-    # ONLY force filename if download mode
+    # Force filename ONLY in download mode
     if download_mode == "1":
-        import random, string
-        random_part = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-        filename = f"ToolifyX Downloader-{random_part}.mp4"
 
-        response_headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        rand = ''.join(random.choices(
+            string.ascii_lowercase + string.digits, k=8))
+
+        filename = f"ToolifyX-{rand}.mp4"
+
+        response_headers["Content-Disposition"] = \
+            f'attachment; filename="{filename}"'
 
     return Response(
         r.iter_content(chunk_size=8192),
@@ -280,7 +355,7 @@ def proxy():
 
 
 # -----------------------------
-# STATS ENDPOINT (UPDATED)
+# STATS API
 # -----------------------------
 
 @app.route("/stats")
@@ -290,7 +365,7 @@ def stats():
 
 
 # -----------------------------
-# RESET ENDPOINT (NEW)
+# ADMIN RESET
 # -----------------------------
 
 @app.route("/admin/reset", methods=["POST"])
@@ -304,9 +379,18 @@ def reset():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
-    c.execute("UPDATE stats SET requests=0, cache_hits=0, downloads=0, videos_served=0")
+    c.execute("""
+        UPDATE stats
+        SET requests=0,
+            cache_hits=0,
+            downloads=0,
+            videos_served=0,
+            mb_served=0
+    """)
+
     c.execute("DELETE FROM ips")
     c.execute("DELETE FROM logs")
+    c.execute("DELETE FROM daily")
 
     conn.commit()
     conn.close()
@@ -315,7 +399,7 @@ def reset():
 
 
 # -----------------------------
-# RUN APP (UNCHANGED)
+# RUN
 # -----------------------------
 
 if __name__ == "__main__":
