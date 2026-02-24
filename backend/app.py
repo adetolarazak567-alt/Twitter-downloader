@@ -226,10 +226,10 @@ def normalize_twitter_url(url):
     return url
 
 
-# -----------------------------
-# DOWNLOAD INFO
-# -----------------------------
 
+# -----------------------------
+# DOWNLOAD INFO (FILTERED RESOLUTIONS)
+# -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
 
@@ -245,9 +245,7 @@ def download():
     now = time.time()
 
     if url in CACHE and now - CACHE[url]["time"] < CACHE_TTL:
-
         increment_stat("cache_hits")
-
         return jsonify(CACHE[url]["data"])
 
     try:
@@ -259,38 +257,53 @@ def download():
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-
             info = ydl.extract_info(url, download=False)
-
             videos = []
 
+            # Map heights to closest allowed resolution
+            allowed_heights = [320, 720, 1080, 2160]  # 2160 = 2k
+            added_heights = set()
+
             for f in info["formats"]:
+                if f.get("ext") != "mp4":
+                    continue
+                h = f.get("height")
+                if not h:
+                    continue
 
-                if f.get("ext") == "mp4":
+                # Find closest allowed height
+                closest = min(allowed_heights, key=lambda x: abs(x - h))
 
-                    videos.append({
-                        "url": f["url"],
-                        "quality": f.get("height", "auto"),
-                        "filesize": f.get("filesize", 0)
-                    })
+                # Only add one per allowed height
+                if closest in added_heights:
+                    continue
 
-        result = {
-            "success": True,
-            "videos": videos
-        }
+                size = f.get("filesize") or f.get("filesize_approx") or 0
 
-        CACHE[url] = {
-            "time": now,
-            "data": result
-        }
+                videos.append({
+                    "url": f["url"],
+                    "quality": f"{closest}p",
+                    "height": closest,
+                    "filesize": size,
+                    "filesize_mb": round(size / 1024 / 1024, 2) if size else None
+                })
+
+                added_heights.add(closest)
+
+        if not videos:
+            raise Exception("No downloadable video found")
+
+        # Sort by quality descending
+        videos.sort(key=lambda x: x["height"], reverse=True)
+
+        result = {"success": True, "title": info.get("title"), "videos": videos}
+
+        CACHE[url] = {"time": now, "data": result}
 
         return jsonify(result)
 
     except Exception as e:
-
         return jsonify({"success": False, "message": str(e)}), 500
-
-
 # -----------------------------
 # PROXY (PRO VERSION)
 # -----------------------------
