@@ -307,64 +307,47 @@ def download():
 # -----------------------------
 # PROXY (PRO VERSION)
 # -----------------------------
-
 @app.route("/proxy")
 def proxy():
 
-    video_url = request.args.get("url")
-    download_mode = request.args.get("download")
+    url = request.args.get("url")
+    download = request.args.get("download")
 
-    if not video_url:
-        return "No URL", 400
+    if not url:
+        return "Missing URL", 400
 
-    ip = request.remote_addr
+    try:
 
-    headers = {}
+        r = requests.get(url, stream=True, timeout=30)
 
-    if "Range" in request.headers:
-        headers["Range"] = request.headers["Range"]
+        file_size = r.headers.get("Content-Length")
 
-    r = requests.get(video_url, headers=headers, stream=True)
+        headers = {
+            "Content-Type": "video/mp4",
+            "Accept-Ranges": "bytes"
+        }
 
-    size_mb = 0
+        if download == "1":
 
-    if "Content-Length" in r.headers:
-        size_mb = int(r.headers["Content-Length"]) / 1024 / 1024
+            headers["Content-Disposition"] = \
+                "attachment; filename=ToolifyX Downloader_random.mp4"
 
-    # Update stats
-    increment_stat("downloads")
-    increment_stat("videos_served")
-    increment_stat("mb_served", size_mb)
+        else:
 
-    increment_daily(size_mb)
+            headers["Content-Disposition"] = \
+                "inline; filename=ToolifyX Downloader_random.mp4"
 
-    save_ip(ip)
-    save_log(ip, video_url)
+        if file_size:
+            headers["Content-Length"] = file_size
 
-    response_headers = {
-        "Content-Type": r.headers.get("Content-Type", "video/mp4"),
-        "Accept-Ranges": "bytes"
-    }
+        return Response(
+            r.iter_content(chunk_size=8192),
+            headers=headers
+        )
 
-    if "Content-Range" in r.headers:
-        response_headers["Content-Range"] = r.headers["Content-Range"]
+    except Exception as e:
 
-    # Force filename ONLY in download mode
-    if download_mode == "1":
-
-        rand = ''.join(random.choices(
-            string.ascii_lowercase + string.digits, k=8))
-
-        filename = f"ToolifyX-{rand}.mp4"
-
-        response_headers["Content-Disposition"] = \
-            f'attachment; filename="{filename}"'
-
-    return Response(
-        r.iter_content(chunk_size=8192),
-        status=r.status_code,
-        headers=response_headers
-    )
+        return str(e), 500
 
 
 # -----------------------------
