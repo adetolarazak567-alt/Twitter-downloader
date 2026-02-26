@@ -63,12 +63,97 @@ def init_db():
     )
     """)
 
+    # EMAIL LIST TABLE (NEW)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS emails (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE,
+        timestamp INTEGER
+    )
+    """)
+
+    # PERMANENT CACHE TABLE (NEW)
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS video_cache (
+        url TEXT PRIMARY KEY,
+        data TEXT,
+        timestamp INTEGER
+    )
+    """)
+
     c.execute("INSERT OR IGNORE INTO stats (id) VALUES (1)")
 
     conn.commit()
     conn.close()
 
 init_db()
+
+
+# -----------------------------
+# EMAIL SAVE API (NEW)
+# -----------------------------
+
+@app.route("/save-email", methods=["POST"])
+def save_email():
+
+    data = request.json
+    email = data.get("email")
+
+    if not email:
+        return jsonify({"success": False})
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    try:
+        c.execute(
+            "INSERT OR IGNORE INTO emails(email,timestamp) VALUES(?,?)",
+            (email, int(time.time()))
+        )
+        conn.commit()
+    except:
+        pass
+
+    conn.close()
+
+    return jsonify({"success": True})
+
+
+# -----------------------------
+# GET EMAILS ADMIN (NEW)
+# -----------------------------
+
+@app.route("/admin/emails", methods=["POST"])
+def get_emails():
+
+    password = request.json.get("password")
+
+    if password != ADMIN_PASSWORD:
+        return jsonify({"success": False}), 401
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    c.execute("""
+        SELECT email,timestamp
+        FROM emails
+        ORDER BY id DESC
+    """)
+
+    emails = c.fetchall()
+
+    conn.close()
+
+    return jsonify({
+        "success": True,
+        "emails": [
+            {
+                "email": e[0],
+                "timestamp": e[1]
+            }
+            for e in emails
+        ]
+    })
 
 
 # -----------------------------
@@ -110,126 +195,47 @@ def increment_daily(mb):
     conn.close()
 
 
-def save_ip(ip):
+# -----------------------------
+# PERMANENT CACHE LOAD/SAVE (NEW)
+# -----------------------------
 
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    c.execute(
-        "INSERT OR IGNORE INTO ips(ip) VALUES(?)",
-        (ip,)
-    )
-
-    conn.commit()
-    conn.close()
-
-
-def save_log(ip, url):
+def save_cache(url, data):
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
     c.execute("""
-        INSERT INTO logs(ip,url,timestamp)
+        INSERT OR REPLACE INTO video_cache(url,data,timestamp)
         VALUES(?,?,?)
-    """, (ip, url, int(time.time())))
+    """, (url, str(data), int(time.time())))
 
     conn.commit()
     conn.close()
 
 
-def get_stats():
+def load_cache(url):
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
     c.execute("""
-        SELECT requests, cache_hits, downloads,
-               videos_served, mb_served
-        FROM stats WHERE id=1
-    """)
+        SELECT data FROM video_cache WHERE url=?
+    """, (url,))
 
-    stats = c.fetchone()
-
-    c.execute("SELECT COUNT(*) FROM ips")
-    unique_ips = c.fetchone()[0]
-
-    c.execute("""
-        SELECT date, downloads, mb_served
-        FROM daily
-        ORDER BY date DESC
-        LIMIT 30
-    """)
-
-    daily = c.fetchall()
-
-    c.execute("""
-        SELECT ip,url,timestamp
-        FROM logs
-        ORDER BY id DESC
-        LIMIT 100
-    """)
-
-    logs = c.fetchall()
+    row = c.fetchone()
 
     conn.close()
 
-    return {
+    if row:
+        return eval(row[0])
 
-        "requests": stats[0],
-        "cache_hits": stats[1],
-        "downloads": stats[2],
-        "videos_served": stats[3],
-        "mb_served": round(stats[4], 2),
-        "unique_ips": unique_ips,
-
-        "daily": [
-            {
-                "date": d[0],
-                "downloads": d[1],
-                "mb_served": round(d[2], 2)
-            }
-            for d in daily
-        ],
-
-        "logs": [
-            {
-                "ip": l[0],
-                "url": l[1],
-                "timestamp": l[2]
-            }
-            for l in logs
-        ]
-    }
+    return None
 
 
 # -----------------------------
-# CACHE
+# DOWNLOAD INFO
 # -----------------------------
 
-CACHE = {}
-CACHE_TTL = 600
-
-
-# -----------------------------
-# HELPERS
-# -----------------------------
-
-def normalize_twitter_url(url):
-
-    if "x.com" in url:
-        url = url.replace("x.com", "twitter.com")
-
-    if "mobile.twitter.com" in url:
-        url = url.replace("mobile.twitter.com", "twitter.com")
-
-    return url
-
-
-
-# -----------------------------
-# DOWNLOAD INFO (FILTERED RESOLUTIONS)
-# -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
 
@@ -241,41 +247,40 @@ def download():
     if not url:
         return jsonify({"success": False}), 400
 
-    url = normalize_twitter_url(url)
-    now = time.time()
-
-    if url in CACHE and now - CACHE[url]["time"] < CACHE_TTL:
+    # CHECK PERMANENT CACHE FIRST
+    cached = load_cache(url)
+    if cached:
         increment_stat("cache_hits")
-        return jsonify(CACHE[url]["data"])
+        return jsonify(cached)
 
     try:
 
         ydl_opts = {
             "quiet": True,
             "skip_download": True,
-            "format": "best"
+            "format": "bestvideo+bestaudio/best"
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+
             info = ydl.extract_info(url, download=False)
             videos = []
 
-            # Map heights to closest allowed resolution
-            allowed_heights = [320, 720, 1080, 2160]  # 2160 = 2k
-            added_heights = set()
+            allowed_heights = [320, 720, 1080, 2160]
+            added = set()
 
             for f in info["formats"]:
+
                 if f.get("ext") != "mp4":
                     continue
+
                 h = f.get("height")
                 if not h:
                     continue
 
-                # Find closest allowed height
-                closest = min(allowed_heights, key=lambda x: abs(x - h))
+                closest = min(allowed_heights, key=lambda x: abs(x-h))
 
-                # Only add one per allowed height
-                if closest in added_heights:
+                if closest in added:
                     continue
 
                 size = f.get("filesize") or f.get("filesize_approx") or 0
@@ -285,28 +290,35 @@ def download():
                     "quality": f"{closest}p",
                     "height": closest,
                     "filesize": size,
-                    "filesize_mb": round(size / 1024 / 1024, 2) if size else None
+                    "filesize_mb": round(size/1024/1024,2) if size else None
                 })
 
-                added_heights.add(closest)
+                added.add(closest)
 
-        if not videos:
-            raise Exception("No downloadable video found")
+        videos.sort(key=lambda x:x["height"], reverse=True)
 
-        # Sort by quality descending
-        videos.sort(key=lambda x: x["height"], reverse=True)
+        result = {
+            "success": True,
+            "title": info.get("title"),
+            "videos": videos
+        }
 
-        result = {"success": True, "title": info.get("title"), "videos": videos}
-
-        CACHE[url] = {"time": now, "data": result}
+        save_cache(url, result)
 
         return jsonify(result)
 
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+
 # -----------------------------
-# PROXY (PRO VERSION)
+# PROXY FIXED SIZE ACCURACY
 # -----------------------------
+
 @app.route("/proxy")
 def proxy():
 
@@ -318,18 +330,27 @@ def proxy():
 
     try:
 
-        r = requests.get(url, stream=True, timeout=30)
+        r = requests.get(url, stream=True)
 
-        file_size = r.headers.get("Content-Length")
+        total = int(r.headers.get("Content-Length", 0))
+
+        increment_stat("downloads")
+
+        increment_stat("videos_served")
+
+        mb = total / 1024 / 1024
+
+        increment_stat("mb_served", mb)
+
+        increment_daily(mb)
 
         headers = {
             "Content-Type": "video/mp4",
+            "Content-Length": str(total),
             "Accept-Ranges": "bytes"
         }
 
-        # Generate random filename
-        random_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        filename = f"ToolifyX Downloader_{random_id}.mp4"
+        filename = "ToolifyX.mp4"
 
         if download == "1":
 
@@ -341,9 +362,6 @@ def proxy():
             headers["Content-Disposition"] = \
                 f"inline; filename={filename}"
 
-        if file_size:
-            headers["Content-Length"] = file_size
-
         return Response(
             r.iter_content(chunk_size=8192),
             headers=headers
@@ -353,46 +371,13 @@ def proxy():
 
         return str(e), 500
 
+
 # -----------------------------
 # STATS API
 # -----------------------------
 
 @app.route("/stats")
 def stats():
-
-    return jsonify(get_stats())
-
-
-# -----------------------------
-# ADMIN RESET
-# -----------------------------
-
-@app.route("/admin/reset", methods=["POST"])
-def reset():
-
-    password = request.json.get("password")
-
-    if password != ADMIN_PASSWORD:
-        return jsonify({"success": False}), 401
-
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-
-    c.execute("""
-        UPDATE stats
-        SET requests=0,
-            cache_hits=0,
-            downloads=0,
-            videos_served=0,
-            mb_served=0
-    """)
-
-    c.execute("DELETE FROM ips")
-    c.execute("DELETE FROM logs")
-    c.execute("DELETE FROM daily")
-
-    conn.commit()
-    conn.close()
 
     return jsonify({"success": True})
 
