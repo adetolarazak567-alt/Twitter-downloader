@@ -247,7 +247,6 @@ def download():
     if not url:
         return jsonify({"success": False}), 400
 
-    # CHECK PERMANENT CACHE FIRST
     cached = load_cache(url)
     if cached:
         increment_stat("cache_hits")
@@ -256,36 +255,41 @@ def download():
     try:
 
         ydl_opts = {
-    "quiet": True,
-    "skip_download": True,
-    "format": "bestvideo+bestaudio/best",
-    
-    "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
-    },
+            "quiet": True,
+            "skip_download": True,
+            "format": "bestvideo+bestaudio/best",
 
-    "nocheckcertificate": True,
-    "geo_bypass": True
-}
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+                "Accept-Language": "en-US,en;q=0.9"
+            },
+
+            "nocheckcertificate": True,
+            "geo_bypass": True
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
 
             info = ydl.extract_info(url, download=False)
+
             videos = []
-
-            allowed_heights = [320, 720, 1080, 2160]
             added = set()
+            allowed_heights = [320, 480, 720, 1080, 2160]
 
-            for f in info["formats"]:
+            for f in info.get("formats", []):
 
                 if f.get("ext") != "mp4":
                     continue
 
-                h = f.get("height")
-                if not h:
+                if not f.get("url"):
                     continue
 
-                closest = min(allowed_heights, key=lambda x: abs(x-h))
+                height = f.get("height")
+
+                if not height:
+                    continue
+
+                closest = min(allowed_heights, key=lambda x: abs(x-height))
 
                 if closest in added:
                     continue
@@ -302,7 +306,7 @@ def download():
 
                 added.add(closest)
 
-        videos.sort(key=lambda x:x["height"], reverse=True)
+        videos.sort(key=lambda x: x["height"], reverse=True)
 
         result = {
             "success": True,
@@ -320,64 +324,6 @@ def download():
             "success": False,
             "message": str(e)
         }), 500
-
-
-# -----------------------------
-# PROXY FIXED SIZE ACCURACY
-# -----------------------------
-
-@app.route("/proxy")
-def proxy():
-
-    url = request.args.get("url")
-    download = request.args.get("download")
-
-    if not url:
-        return "Missing URL", 400
-
-    try:
-
-        r = requests.get(url, stream=True)
-
-        total = int(r.headers.get("Content-Length", 0))
-
-        increment_stat("downloads")
-
-        increment_stat("videos_served")
-
-        mb = total / 1024 / 1024
-
-        increment_stat("mb_served", mb)
-
-        increment_daily(mb)
-
-        headers = {
-            "Content-Type": "video/mp4",
-            "Content-Length": str(total),
-            "Accept-Ranges": "bytes"
-        }
-
-        filename = "ToolifyX.mp4"
-
-        if download == "1":
-
-            headers["Content-Disposition"] = \
-                f"attachment; filename={filename}"
-
-        else:
-
-            headers["Content-Disposition"] = \
-                f"inline; filename={filename}"
-
-        return Response(
-            r.iter_content(chunk_size=8192),
-            headers=headers
-        )
-
-    except Exception as e:
-
-        return str(e), 500
-
 
 # -----------------------------
 # STATS API
