@@ -244,7 +244,7 @@ def download():
         return jsonify({"success": False, "message": str(e)}), 500
 
 # -----------------------------
-# PROXY STREAM / DOWNLOAD
+# PROXY STREAM / DOWNLOAD (FULL SUPPORT)
 # -----------------------------
 @app.route("/proxy")
 def proxy():
@@ -261,25 +261,34 @@ def proxy():
 
         file_size = r.headers.get("Content-Length")
 
+        # generate random filename
+        random_id = ''.join(
+            random.choices(string.ascii_uppercase + string.digits, k=6)
+        )
+
+        filename = f"ToolifyX Downloader-{random_id}.mp4"
+
         headers = {
             "Content-Type": "video/mp4",
             "Accept-Ranges": "bytes"
         }
 
+        # accurate file size (fixes 1.1MB/? issue)
         if file_size:
             headers["Content-Length"] = file_size
 
-        filename = "ToolifyX_Twitter_Video.mp4"
-
+        # preview vs download mode
         if download == "1":
 
+            # forces download
             headers["Content-Disposition"] = \
-                f"attachment; filename={filename}"
+                f"attachment; filename=\"{filename}\""
 
         else:
 
+            # allows preview in browser player
             headers["Content-Disposition"] = \
-                f"inline; filename={filename}"
+                f"inline; filename=\"{filename}\""
 
         return Response(
             r.iter_content(chunk_size=8192),
@@ -288,6 +297,7 @@ def proxy():
 
     except Exception as e:
         return str(e), 500
+
 # -----------------------------
 # STATS ENDPOINT
 # -----------------------------
