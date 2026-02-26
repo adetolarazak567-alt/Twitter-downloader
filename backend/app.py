@@ -244,6 +244,51 @@ def download():
         return jsonify({"success": False, "message": str(e)}), 500
 
 # -----------------------------
+# PROXY STREAM / DOWNLOAD
+# -----------------------------
+@app.route("/proxy")
+def proxy():
+
+    url = request.args.get("url")
+    download = request.args.get("download")
+
+    if not url:
+        return "Missing URL", 400
+
+    try:
+
+        r = requests.get(url, stream=True, timeout=30)
+
+        file_size = r.headers.get("Content-Length")
+
+        headers = {
+            "Content-Type": "video/mp4",
+            "Accept-Ranges": "bytes"
+        }
+
+        if file_size:
+            headers["Content-Length"] = file_size
+
+        filename = "ToolifyX_Twitter_Video.mp4"
+
+        if download == "1":
+
+            headers["Content-Disposition"] = \
+                f"attachment; filename={filename}"
+
+        else:
+
+            headers["Content-Disposition"] = \
+                f"inline; filename={filename}"
+
+        return Response(
+            r.iter_content(chunk_size=8192),
+            headers=headers
+        )
+
+    except Exception as e:
+        return str(e), 500
+# -----------------------------
 # STATS ENDPOINT
 # -----------------------------
 @app.route("/stats")
