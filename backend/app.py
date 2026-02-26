@@ -327,15 +327,19 @@ def proxy():
             "Accept-Ranges": "bytes"
         }
 
+        # Generate random filename
+        random_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        filename = f"ToolifyX Downloader_{random_id}.mp4"
+
         if download == "1":
 
             headers["Content-Disposition"] = \
-                "attachment; filename=ToolifyX Downloader_random.mp4"
+                f"attachment; filename={filename}"
 
         else:
 
             headers["Content-Disposition"] = \
-                "inline; filename=ToolifyX Downloader_random.mp4"
+                f"inline; filename={filename}"
 
         if file_size:
             headers["Content-Length"] = file_size
@@ -348,7 +352,6 @@ def proxy():
     except Exception as e:
 
         return str(e), 500
-
 
 # -----------------------------
 # STATS API
