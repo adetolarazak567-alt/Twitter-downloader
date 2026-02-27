@@ -367,13 +367,15 @@ def download():
         ydl_opts = {
     "quiet": True,
     "skip_download": True,
-    "format": "best",
+    "format": "bestvideo+bestaudio/best",
     "noplaylist": True,
-    "extract_flat": False,
     "nocheckcertificate": True,
+    "ignoreerrors": True,
+    "retries": 3,
+    "fragment_retries": 3,
     "http_headers": {
-        "User-Agent": "Mozilla/5.0",
-        "Accept-Language": "en-US,en;q=0.9"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept-Language": "en-US,en;q=0.9",
     }
 }
 
