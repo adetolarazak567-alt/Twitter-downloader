@@ -346,85 +346,92 @@ def normalize_twitter_url(url):
 # -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
-
     increment_stat("requests")
 
     data = request.get_json()
     url = data.get("url")
 
     if not url:
-        return jsonify({"success": False}), 400
+        return jsonify({"success": False, "message": "No URL provided"}), 400
 
-    # normalize twitter/x urls
+    # Normalize Twitter/X URLs
     url = normalize_twitter_url(url)
 
-    # check cache
+    # Check cache first
     cached = load_cache(url)
     if cached:
         increment_stat("cache_hits")
         return jsonify(cached)
 
     try:
-
         ydl_opts = {
             "quiet": True,
             "skip_download": True,
-            "format": "best"
+            "format": "best",
+            "noplaylist": True,  # safer if a playlist link is sent
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            },
+            "ignoreerrors": True
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            videos = []
+        # Retry logic: try twice
+        for attempt in range(2):
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                if info:
+                    break
+            except Exception as e:
+                print(f"yt-dlp attempt {attempt+1} failed:", e)
+                if attempt == 1:
+                    raise e
+                time.sleep(1)  # wait a sec before retry
 
-            allowed_heights = [320, 720, 1080, 2160]
-            added_heights = set()
+        videos = []
+        allowed_heights = [320, 720, 1080, 2160]
+        added_heights = set()
 
-            for f in info["formats"]:
+        for f in info.get("formats", []):
+            if f.get("ext") != "mp4" or not f.get("height"):
+                continue
 
-                if f.get("ext") != "mp4":
-                    continue
+            closest = min(allowed_heights, key=lambda x: abs(x - f["height"]))
+            if closest in added_heights:
+                continue
 
-                h = f.get("height")
-                if not h:
-                    continue
+            size = f.get("filesize") or f.get("filesize_approx") or 0
 
-                closest = min(allowed_heights, key=lambda x: abs(x - h))
-
-                if closest in added_heights:
-                    continue
-
-                size = f.get("filesize") or f.get("filesize_approx") or 0
-
-                videos.append({
-                    "url": f["url"],
-                    "quality": f"{closest}p",
-                    "height": closest,
-                    "filesize": size,
-                    "filesize_mb": round(size / 1024 / 1024, 2) if size else None
-                })
-
-                added_heights.add(closest)
+            videos.append({
+                "url": f["url"],
+                "quality": f"{closest}p",
+                "height": closest,
+                "filesize": size,
+                "filesize_mb": round(size / 1024 / 1024, 2) if size else None
+            })
+            added_heights.add(closest)
 
         if not videos:
-            raise Exception("No downloadable video found")
+            return jsonify({"success": False, "message": "No downloadable video found"}), 404
 
         videos.sort(key=lambda x: x["height"], reverse=True)
 
         result = {
             "success": True,
-            "title": info.get("title"),
+            "title": info.get("title") or "Untitled Video",
             "videos": videos
         }
 
+        # Save to cache
         save_cache(url, result)
 
         return jsonify(result)
 
     except Exception as e:
-        return jsonify({
-            "success": False,
-            "message": str(e)
-        }), 500
+        # Full logging
+        import traceback
+        print("DOWNLOAD ERROR:", traceback.format_exc())
+        return jsonify({"success": False, "message": str(e)}), 500
 # -----------------------------
 # PROXY (PRO VERSION)
 # -----------------------------
