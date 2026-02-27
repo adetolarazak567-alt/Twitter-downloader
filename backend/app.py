@@ -487,6 +487,16 @@ def proxy():
     except Exception as e:
 
         return str(e), 500
+# -----------------------------
+# HOME / HEALTHCHECK
+# -----------------------------
+@app.route("/")
+def home():
+    return jsonify({
+        "status": "ok",
+        "service": "ToolifyX Downloader API",
+        "version": "1.0"
+    })
 
 # -----------------------------
 # STATS API
