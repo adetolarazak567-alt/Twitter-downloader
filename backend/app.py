@@ -347,10 +347,9 @@ def normalize_twitter_url(url):
 @app.route("/download", methods=["POST"])
 def download():
     increment_stat("requests")
-
     data = request.get_json()
-    url = data.get("url")
-
+    # url = data.get("url")   <-- comment this out for test
+    url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     if not url:
         return jsonify({"success": False, "message": "No URL provided"}), 400
 
