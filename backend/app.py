@@ -346,89 +346,95 @@ def normalize_twitter_url(url):
 # -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
+
     increment_stat("requests")
 
     data = request.get_json()
     url = data.get("url")
 
     if not url:
-        return jsonify({"success": False, "message": "No URL provided"}), 400
+        return jsonify({
+            "success": False,
+            "message": "No URL provided"
+        }), 400
 
-    # Normalize Twitter/X URLs
     url = normalize_twitter_url(url)
 
-    # Check cache first
+    # check cache
     cached = load_cache(url)
     if cached:
         increment_stat("cache_hits")
         return jsonify(cached)
 
     try:
-        ydl_opts = {
-    "quiet": True,
-    "skip_download": True,
-    "format": "bestvideo+bestaudio/best",
-    "noplaylist": True,
-    "nocheckcertificate": True,
-    "ignoreerrors": True,
-    "retries": 3,
-    "fragment_retries": 3,
-    "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-}
 
-        # Try extraction
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "format": "best",
+            "nocheckcertificate": True,
+            "retries": 10,
+            "fragment_retries": 10,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0"
+            }
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         if not info:
-            return jsonify({"success": False, "message": "Failed to extract video info"}), 500
+            return jsonify({
+                "success": False,
+                "message": "Video extraction failed"
+            }), 500
 
-        videos = []
-        allowed_heights = [320, 720, 1080, 2160]
-        added_heights = set()
+        # Get best direct video URL
+        video_url = None
+        height = 0
 
         for f in info.get("formats", []):
-            if f.get("ext") != "mp4" or not f.get("height"):
-                continue
+            if f.get("ext") == "mp4":
+                if f.get("height", 0) > height:
+                    height = f.get("height", 0)
+                    video_url = f.get("url")
 
-            closest = min(allowed_heights, key=lambda x: abs(x - f["height"]))
-            if closest in added_heights:
-                continue
+        if not video_url:
+            return jsonify({
+                "success": False,
+                "message": "No video found"
+            }), 404
 
-            size = f.get("filesize") or f.get("filesize_approx") or 0
-
-            videos.append({
-                "url": f["url"],
-                "quality": f"{closest}p",
-                "height": closest,
-                "filesize": size,
-                "filesize_mb": round(size / 1024 / 1024, 2) if size else None
-            })
-            added_heights.add(closest)
-
-        if not videos:
-            return jsonify({"success": False, "message": "No downloadable mp4 found"}), 404
-
-        videos.sort(key=lambda x: x["height"], reverse=True)
+        videos = [
+            {
+                "url": video_url,
+                "quality": f"{height}p",
+                "height": height,
+                "filesize": None,
+                "filesize_mb": None
+            }
+        ]
 
         result = {
             "success": True,
-            "title": info.get("title") or "Untitled Video",
+            "title": info.get("title", "Twitter Video"),
             "videos": videos
         }
 
-        # Save cache
         save_cache(url, result)
 
         return jsonify(result)
 
     except Exception as e:
+
         import traceback
-        print("DOWNLOAD ERROR:", traceback.format_exc())
-        return jsonify({"success": False, "message": str(e)}), 500
+        print(traceback.format_exc())
+
+        return jsonify({
+            "success": False,
+            "message": "Extraction failed"
+        }), 500
 # -----------------------------
 # PROXY (PRO VERSION)
 # -----------------------------
