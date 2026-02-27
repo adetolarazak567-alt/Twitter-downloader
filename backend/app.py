@@ -365,15 +365,17 @@ def download():
 
     try:
         ydl_opts = {
-            "quiet": True,
-            "skip_download": True,
-            "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]",
-            "noplaylist": True,
-            "http_headers": {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            },
-            "ignoreerrors": True
-        }
+    "quiet": True,
+    "skip_download": True,
+    "format": "best",
+    "noplaylist": True,
+    "extract_flat": False,
+    "nocheckcertificate": True,
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+}
 
         # Try extraction
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
