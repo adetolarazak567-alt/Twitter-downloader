@@ -246,6 +246,7 @@ def download():
 
     url = normalize_twitter_url(url)
 
+    # Check cache
     cached = load_cache(url)
     if cached:
         increment_stat("cache_hits")
@@ -260,33 +261,47 @@ def download():
             "nocheckcertificate": True,
             "retries": 10,
             "fragment_retries": 10,
-            "extractor_args": {"twitter":{"api":"graphql"}},
-            "http_headers": {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://twitter.com/"
+            },
+            "logger": None
         }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
         if not info:
             return jsonify({"success": False, "message": "Video extraction failed"}), 500
 
-        # Best mp4
+        # Find the best MP4 format
         video_url = None
         height = 0
         for f in info.get("formats", []):
-            if f.get("ext")=="mp4" and f.get("height",0)>height:
-                height = f.get("height",0)
+            if f.get("ext") == "mp4" and f.get("height", 0) > height:
+                height = f.get("height", 0)
                 video_url = f.get("url")
+
         if not video_url:
             return jsonify({"success": False, "message": "No video found"}), 404
 
-        videos = [{"url":video_url,"quality":f"{height}p","height":height,"filesize":None,"filesize_mb":None}]
-        result = {"success":True,"title":info.get("title","Twitter Video"),"videos":videos}
+        videos = [{
+            "url": video_url,
+            "quality": f"{height}p",
+            "height": height,
+            "filesize": None,
+            "filesize_mb": None
+        }]
+
+        result = {"success": True, "title": info.get("title", "Twitter Video"), "videos": videos}
         save_cache(url, result)
         return jsonify(result)
+
     except Exception as e:
         import traceback
-        print(traceback.format_exc())
-        return jsonify({"success":False,"message":"Extraction failed"}), 500
+        print("Extraction error:", traceback.format_exc())
+        return jsonify({"success": False, "message": "Extraction failed"}), 500
 
 
 # -----------------------------
