@@ -372,26 +372,23 @@ def download():
         return jsonify(cached)
 
     try:
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "format": "best",
-        "nocheckcertificate": True,
-        "retries": 10,
-        "fragment_retries": 10,
-        "extractor_args": {
-            "twitter": {
-                "api": "graphql"
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "format": "best",
+            "nocheckcertificate": True,
+            "retries": 10,
+            "fragment_retries": 10,
+            "extractor_args": {
+                "twitter": {
+                    "api": "graphql"
+                }
+            },
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             }
-        },
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -439,10 +436,8 @@ def download():
         return jsonify(result)
 
     except Exception as e:
-
         import traceback
         print(traceback.format_exc())
-
         return jsonify({
             "success": False,
             "message": "Extraction failed"
