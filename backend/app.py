@@ -62,14 +62,15 @@ def init_db():
         mb_served REAL DEFAULT 0
     )
     """)
-# Emails list
-c.execute("""
-CREATE TABLE IF NOT EXISTS emails (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT UNIQUE,
-    timestamp INTEGER
-)
-""")
+
+    # ✅ Emails table FIXED
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS emails (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE,
+        timestamp INTEGER
+    )
+    """)
 
     c.execute("INSERT OR IGNORE INTO stats (id) VALUES (1)")
 
@@ -354,14 +355,14 @@ def download():
     if not url:
         return jsonify({"success": False}), 400
 
+    # normalize twitter/x urls
     url = normalize_twitter_url(url)
-    now = time.time()
 
-  cached = load_cache(url)
-
-if cached:
-    increment_stat("cache_hits")
-    return jsonify(cached)
+    # check cache
+    cached = load_cache(url)
+    if cached:
+        increment_stat("cache_hits")
+        return jsonify(cached)
 
     try:
 
@@ -375,21 +376,20 @@ if cached:
             info = ydl.extract_info(url, download=False)
             videos = []
 
-            # Map heights to closest allowed resolution
-            allowed_heights = [320, 720, 1080, 2160]  # 2160 = 2k
+            allowed_heights = [320, 720, 1080, 2160]
             added_heights = set()
 
             for f in info["formats"]:
+
                 if f.get("ext") != "mp4":
                     continue
+
                 h = f.get("height")
                 if not h:
                     continue
 
-                # Find closest allowed height
                 closest = min(allowed_heights, key=lambda x: abs(x - h))
 
-                # Only add one per allowed height
                 if closest in added_heights:
                     continue
 
@@ -408,16 +408,23 @@ if cached:
         if not videos:
             raise Exception("No downloadable video found")
 
-        # Sort by quality descending
         videos.sort(key=lambda x: x["height"], reverse=True)
 
-        result = {"success": True, "title": info.get("title"), "videos": videos}
+        result = {
+            "success": True,
+            "title": info.get("title"),
+            "videos": videos
+        }
 
         save_cache(url, result)
+
         return jsonify(result)
 
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
 # -----------------------------
 # PROXY (PRO VERSION)
 # -----------------------------
@@ -435,12 +442,13 @@ def proxy():
         r = requests.get(url, stream=True, timeout=30)
 
         file_size = r.headers.get("Content-Length")
-mb = 0
-if file_size:
-    mb = int(file_size) / 1024 / 1024
-    increment_stat("mb_served", mb)
-    increment_stat("downloads", 1)
-    increment_daily(mb)
+
+        mb = 0
+        if file_size:
+            mb = int(file_size) / 1024 / 1024
+            increment_stat("mb_served", mb)
+            increment_stat("downloads", 1)
+            increment_daily(mb)
 
         headers = {
             "Content-Type": "video/mp4",
