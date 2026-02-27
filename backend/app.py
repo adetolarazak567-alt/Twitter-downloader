@@ -372,32 +372,26 @@ def download():
         return jsonify(cached)
 
     try:
+    ydl_opts = {
+        "quiet": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "format": "best",
+        "nocheckcertificate": True,
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_args": {
+            "twitter": {
+                "api": "graphql"
+            }
+        },
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+    }
 
-       ydl_opts = {
-    "quiet": True,
-    "skip_download": True,
-    "noplaylist": True,
-
-    # VERY IMPORTANT
-    "format": "best[ext=mp4]/best",
-
-    # Stability fixes
-    "nocheckcertificate": True,
-    "retries": 10,
-    "fragment_retries": 10,
-    "extractor_retries": 10,
-    "socket_timeout": 30,
-
-    # Twitter/X extraction fix
-    "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Accept-Language": "en-US,en;q=0.9"
-    },
-
-    # Prevent blocking
-    "geo_bypass": True,
-    "geo_bypass_country": "US"
-}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
