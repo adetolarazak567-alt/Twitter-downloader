@@ -234,136 +234,33 @@ def normalize_twitter_url(url):
 
 
 # -----------------------------
-# DOWNLOAD (Twitter/X)
+# DOWNLOAD ENDPOINT
 # -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
-
-    increment_stat("requests")
-
+    STATS["requests"] += 1
     data = request.get_json()
     url = data.get("url")
-
     if not url:
-        return jsonify({
-            "success": False,
-            "message": "No URL provided"
-        }), 400
+        return jsonify({"success": False, "message": "No URL provided"}), 400
 
     url = normalize_twitter_url(url)
+    now = time.time()
 
-    # Check cache first
-    cached = load_cache(url)
-    if cached:
-        increment_stat("cache_hits")
-        return jsonify(cached)
-
-    def extract_with_ytdlp(target_url):
-
-        ydl_opts = {
-            "quiet": True,
-            "skip_download": True,
-            "noplaylist": True,
-            "format": "best",
-            "nocheckcertificate": True,
-            "retries": 10,
-            "fragment_retries": 10,
-            "http_headers": {
-                "User-Agent":
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Referer": "https://twitter.com/"
-            }
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(target_url, download=False)
-
-    def extract_fallback(target_url):
-
-        # Alternative extractor method
-        ydl_opts = {
-            "quiet": True,
-            "skip_download": True,
-            "nocheckcertificate": True,
-            "http_headers": {
-                "User-Agent":
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
-            }
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            return ydl.extract_info(target_url, download=False)
+    # CACHE HIT
+    if url in CACHE and now - CACHE[url]["time"] < CACHE_TTL:
+        STATS["cache_hits"] += 1
+        cached_data = CACHE[url]["data"]
+        cached_data["stats"] = {"cache_hits": STATS["cache_hits"]}
+        return jsonify(cached_data)
 
     try:
-
-        try:
-            info = extract_with_ytdlp(url)
-        except:
-            info = extract_fallback(url)
-
-        if not info:
-            return jsonify({
-                "success": False,
-                "message": "Extraction failed"
-            }), 500
-
-        video_url = None
-        height = 0
-
-        for f in info.get("formats", []):
-
-            if f.get("ext") == "mp4":
-
-                h = f.get("height", 0)
-
-                if h > height and f.get("url"):
-                    height = h
-                    video_url = f.get("url")
-
-        if not video_url:
-
-            return jsonify({
-                "success": False,
-                "message": "No video found"
-            }), 404
-
-        # VERY IMPORTANT: Use proxy URL for preview + download
-        proxy_preview = f"/proxy?url={video_url}"
-        proxy_download = f"/proxy?url={video_url}&download=1"
-
-        result = {
-
-            "success": True,
-
-            "title": info.get("title", "Twitter Video"),
-
-            "videos": [
-
-                {
-                    "url": proxy_download,
-                    "preview": proxy_preview,
-                    "quality": f"{height}p",
-                    "height": height
-                }
-
-            ]
-
-        }
-
-        save_cache(url, result)
-
-        return jsonify(result)
-
+        info = fetch_video_info(url)
+        info["stats"] = {"cache_hits": STATS["cache_hits"]}
+        CACHE[url] = {"time": now, "data": info}
+        return jsonify(info)
     except Exception as e:
-
-        import traceback
-        print(traceback.format_exc())
-
-        return jsonify({
-            "success": False,
-            "message": "Extraction failed"
-        }), 500
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 # -----------------------------
