@@ -380,12 +380,17 @@ def proxy():
 
     try:
 
+        range_header = request.headers.get("Range", None)
+
         headers_req = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "User-Agent": "Mozilla/5.0",
             "Accept": "*/*",
-            "Accept-Encoding": "identity",
+            "Referer": "https://twitter.com/",
             "Connection": "keep-alive",
         }
+
+        if range_header:
+            headers_req["Range"] = range_header
 
         r = requests.get(
             url,
@@ -395,27 +400,30 @@ def proxy():
         )
 
         file_size = r.headers.get("Content-Length")
+        content_range = r.headers.get("Content-Range")
 
-        mb = 0
-        if file_size:
+        # stats tracking
+        if file_size and not range_header:
             mb = int(file_size) / 1024 / 1024
             increment_stat("mb_served", mb)
             increment_stat("downloads", 1)
             increment_daily(mb)
 
-        # Generate filename
+        # filename
         random_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         filename = f"ToolifyX Downloader_{random_id}.mp4"
 
         headers_res = {
             "Content-Type": "video/mp4",
             "Accept-Ranges": "bytes",
-            "Cache-Control": "no-cache",
             "Connection": "keep-alive",
         }
 
         if file_size:
             headers_res["Content-Length"] = file_size
+
+        if content_range:
+            headers_res["Content-Range"] = content_range
 
         if download == "1":
             headers_res["Content-Disposition"] = f"attachment; filename={filename}"
@@ -424,13 +432,13 @@ def proxy():
 
         return Response(
             r.iter_content(chunk_size=8192),
-            headers=headers_res,
-            status=200
+            status=r.status_code,
+            headers=headers_res
         )
 
     except Exception as e:
         print(e)
-        return "Proxy failed", 500 
+        return "Proxy failed", 500
 
 
 # -----------------------------
