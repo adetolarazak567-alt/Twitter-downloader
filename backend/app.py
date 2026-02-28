@@ -264,7 +264,7 @@ def download():
 
 
 # -----------------------------
-# PROXY FOR STREAMING + DOWNLOAD + RENAME
+# PROXY FOR STREAMING
 # -----------------------------
 @app.route("/proxy")
 def proxy():
