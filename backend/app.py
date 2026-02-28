@@ -371,10 +371,7 @@ def download():
 # -----------------------------
 @app.route("/proxy")
 def proxy():
-
     video_url = request.args.get("url")
-    download = request.args.get("download")
-
     if not video_url:
         return "No URL", 400
 
@@ -388,52 +385,22 @@ def proxy():
         "url": video_url,
         "timestamp": int(time.time())
     })
-
     if len(DOWNLOAD_LOGS) > 100:
         DOWNLOAD_LOGS.pop(0)
 
-    try:
+    headers = {}
+    if "Range" in request.headers:
+        headers["Range"] = request.headers["Range"]
 
-        headers = {}
+    r = requests.get(video_url, headers=headers, stream=True)
+    response_headers = {
+        "Content-Type": r.headers.get("Content-Type", "video/mp4"),
+        "Accept-Ranges": "bytes",
+    }
+    if "Content-Range" in r.headers:
+        response_headers["Content-Range"] = r.headers["Content-Range"]
 
-        # IMPORTANT: allow streaming preview
-        if "Range" in request.headers:
-            headers["Range"] = request.headers["Range"]
-
-        r = requests.get(video_url, headers=headers, stream=True, timeout=60)
-
-        # Generate ToolifyX filename
-        random_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        filename = f"ToolifyX Downloader_{random_id}.mp4"
-
-        response_headers = {
-            "Content-Type": r.headers.get("Content-Type", "video/mp4"),
-            "Accept-Ranges": "bytes"
-        }
-
-        # CRITICAL: support video seeking
-        if "Content-Range" in r.headers:
-            response_headers["Content-Range"] = r.headers["Content-Range"]
-
-        if "Content-Length" in r.headers:
-            response_headers["Content-Length"] = r.headers["Content-Length"]
-
-        # THIS enables rename when downloading
-        if download == "1":
-            response_headers["Content-Disposition"] = f'attachment; filename="{filename}"'
-        else:
-            # THIS enables preview but still keeps ToolifyX name
-            response_headers["Content-Disposition"] = f'inline; filename="{filename}"'
-
-        return Response(
-            r.iter_content(chunk_size=8192),
-            status=r.status_code,
-            headers=response_headers
-        )
-
-    except Exception as e:
-        print(e)
-        return "Proxy error", 500
+    return Response(r.iter_content(chunk_size=8192), status=r.status_code, headers=response_headers)
 
 
 
