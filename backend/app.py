@@ -198,94 +198,100 @@ def normalize_twitter_url(url):
 # -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
-
+    # count the request
     increment_stat("requests")
 
     data = request.get_json()
     url = data.get("url")
-
     if not url:
-        return jsonify({
-            "success": False,
-            "message": "No URL provided"
-        })
+        return jsonify({"success": False, "message": "No URL provided"}), 400
 
+    # normalize and check cache
     url = normalize_twitter_url(url)
-
     cached = load_cache(url)
-
     if cached:
         increment_stat("cache_hits")
         return jsonify(cached)
 
     try:
-
         ydl_opts = {
             "quiet": True,
             "skip_download": True,
             "format": "best",
             "nocheckcertificate": True,
             "http_headers": {
-                "User-Agent":
-                "Mozilla/5.0"
-            }
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            },
+            "ignoreerrors": True
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
 
-            info = ydl.extract_info(
-                url,
-                download=False
-            )
+        if not info:
+            return jsonify({"success": False, "message": "Failed to extract video info"}), 500
 
-        video_url = None
-        height = 0
+        # desired qualities: 480, 720, 1080, 2160 (2k/4k)
+        allowed_heights = [480, 720, 1080, 2160]
+        added = set()
+        videos = []
 
+        # iterate formats and map each to the closest allowed height (one per allowed height)
         for f in info.get("formats", []):
+            # require an mp4-like container (keeps compatibility with your frontend)
+            if f.get("ext") != "mp4":
+                continue
 
-            if f.get("ext") == "mp4":
+            # use explicit height if available
+            h = f.get("height")
+            if not h:
+                # some formats don't have height; skip them (keeps results reliable)
+                continue
 
-                if f.get("height", 0) > height:
+            # map to closest allowed height
+            closest = min(allowed_heights, key=lambda x: abs(x - h))
 
-                    height = f.get("height", 0)
-                    video_url = f.get("url")
+            # only add one format per allowed height
+            if closest in added:
+                continue
 
-        if not video_url:
+            size = f.get("filesize") or f.get("filesize_approx") or 0
+            filesize_mb = round(size / 1024 / 1024, 2) if size else None
 
-            return jsonify({
-                "success": False,
-                "message": "No video found"
+            # friendly label: treat 2160 as the "2k/4k" option per your request
+            quality_label = "2k/4k (2160p)" if closest == 2160 else f"{closest}p"
+
+            videos.append({
+                "url": f.get("url"),
+                "quality": quality_label,
+                "height": closest,
+                "filesize": size,
+                "filesize_mb": filesize_mb
             })
 
+            added.add(closest)
+
+        if not videos:
+            return jsonify({"success": False, "message": "No downloadable mp4 found"}), 404
+
+        # sort from highest -> lowest so frontend picks best first
+        videos.sort(key=lambda x: x["height"], reverse=True)
+
         result = {
-
             "success": True,
-
-            "title": info.get(
-                "title",
-                "Twitter Video"
-            ),
-
-            "videos": [
-
-                {
-                    "url": video_url,
-                    "quality": f"{height}p",
-                    "height": height
-                }
-            ]
+            "title": info.get("title") or "Untitled Video",
+            "videos": videos
         }
 
+        # cache the result
         save_cache(url, result)
 
         return jsonify(result)
 
     except Exception as e:
-
-        return jsonify({
-            "success": False,
-            "message": "Extraction failed"
-        })
+        import traceback
+        print("DOWNLOAD ERROR:", traceback.format_exc())
+        return jsonify({"success": False, "message": "Extraction failed"}), 500
 
 
 # -----------------------------
