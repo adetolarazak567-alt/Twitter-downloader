@@ -1,121 +1,380 @@
-from flask import Flask, request, jsonify, Response, render_template_string
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import yt_dlp
 import requests
 import time
 import os
+import sqlite3
+import random
+import string
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-# -----------------------------
-# CACHE & STATS
-# -----------------------------
-CACHE = {}  # url -> {"time": ts, "data": ...}
-CACHE_TTL = 600  # 10 min
-
-STATS = {
-    "requests": 0,
-    "cache_hits": 0,
-    "downloads": 0,
-    "unique_ips": set(),
-    "videos_served": 0
-}
-
-DOWNLOAD_LOGS = []  # store last 100 downloads
-
+DB_FILE = "stats.db"
 ADMIN_PASSWORD = "razzyadminX567"
+CACHE_TTL = 86400  # 24 hours
+
+
+# -----------------------------
+# DATABASE INIT
+# -----------------------------
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    # Main stats
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS stats (
+        id INTEGER PRIMARY KEY,
+        requests INTEGER DEFAULT 0,
+        cache_hits INTEGER DEFAULT 0,
+        downloads INTEGER DEFAULT 0,
+        videos_served INTEGER DEFAULT 0,
+        mb_served REAL DEFAULT 0
+    )
+    """)
+
+    # Unique IPs
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS ips (
+        ip TEXT PRIMARY KEY
+    )
+    """)
+
+    # Logs
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ip TEXT,
+        url TEXT,
+        timestamp INTEGER
+    )
+    """)
+
+    # Daily stats
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS daily (
+        date TEXT PRIMARY KEY,
+        downloads INTEGER DEFAULT 0,
+        mb_served REAL DEFAULT 0
+    )
+    """)
+
+    # Emails
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS emails (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE,
+        timestamp INTEGER
+    )
+    """)
+
+    # Video cache
+    c.execute("""
+    CREATE TABLE IF NOT EXISTS video_cache (
+        url TEXT PRIMARY KEY,
+        data TEXT,
+        timestamp INTEGER
+    )
+    """)
+
+    c.execute("INSERT OR IGNORE INTO stats (id) VALUES (1)")
+
+    conn.commit()
+    conn.close()
+
+init_db()
+
+
+# -----------------------------
+# STAT FUNCTIONS
+# -----------------------------
+def increment_stat(field, amount=1):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(f"UPDATE stats SET {field} = {field} + ? WHERE id = 1", (amount,))
+    conn.commit()
+    conn.close()
+
+
+def increment_daily(mb):
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO daily(date, downloads, mb_served)
+        VALUES (?, 1, ?)
+        ON CONFLICT(date)
+        DO UPDATE SET
+            downloads = downloads + 1,
+            mb_served = mb_served + ?
+    """, (today, mb, mb))
+    conn.commit()
+    conn.close()
+
+
+def save_ip(ip):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO ips(ip) VALUES(?)", (ip,))
+    conn.commit()
+    conn.close()
+
+
+def save_log(ip, url):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO logs(ip,url,timestamp) VALUES(?,?,?)", (ip, url, int(time.time())))
+    conn.commit()
+    conn.close()
+
+
+def save_cache(url, data):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        INSERT OR REPLACE INTO video_cache(url,data,timestamp)
+        VALUES(?,?,?)
+    """, (url, str(data), int(time.time())))
+    conn.commit()
+    conn.close()
+
+
+def load_cache(url):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT data,timestamp FROM video_cache WHERE url=?", (url,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    data, timestamp = row
+    if time.time() - timestamp > CACHE_TTL:
+        return None
+    return eval(data)
+
+
+def get_stats():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    c.execute("SELECT requests, cache_hits, downloads, videos_served, mb_served FROM stats WHERE id=1")
+    stats = c.fetchone()
+
+    c.execute("SELECT COUNT(*) FROM ips")
+    unique_ips = c.fetchone()[0]
+
+    c.execute("SELECT date, downloads, mb_served FROM daily ORDER BY date DESC LIMIT 30")
+    daily = c.fetchall()
+
+    c.execute("SELECT ip,url,timestamp FROM logs ORDER BY id DESC LIMIT 100")
+    logs = c.fetchall()
+
+    conn.close()
+
+    return {
+        "requests": stats[0],
+        "cache_hits": stats[1],
+        "downloads": stats[2],
+        "videos_served": stats[3],
+        "mb_served": round(stats[4], 2),
+        "unique_ips": unique_ips,
+        "daily": [{"date": d[0], "downloads": d[1], "mb_served": round(d[2],2)} for d in daily],
+        "logs": [{"ip": l[0], "url": l[1], "timestamp": l[2]} for l in logs]
+    }
+
+
+# -----------------------------
+# EMAIL API
+# -----------------------------
+@app.route("/save-email", methods=["POST"])
+def save_email():
+    data = request.get_json()
+    email = data.get("email")
+    if not email:
+        return jsonify({"success": False})
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    try:
+        c.execute("INSERT OR IGNORE INTO emails(email,timestamp) VALUES(?,?)", (email, int(time.time())))
+        conn.commit()
+    except:
+        pass
+    conn.close()
+    return jsonify({"success": True})
+
+
+@app.route("/admin/emails", methods=["POST"])
+def get_emails():
+    password = request.json.get("password")
+    if password != ADMIN_PASSWORD:
+        return jsonify({"success": False}), 401
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT email,timestamp FROM emails ORDER BY id DESC")
+    emails = c.fetchall()
+    conn.close()
+    return jsonify({"success": True, "emails":[{"email":e[0],"timestamp":e[1]} for e in emails]})
+
 
 # -----------------------------
 # HELPERS
 # -----------------------------
-def normalize_twitter_url(url: str) -> str:
+def normalize_twitter_url(url):
+    url = url.strip()
     if "x.com" in url:
         url = url.replace("x.com", "twitter.com")
     if "mobile.twitter.com" in url:
         url = url.replace("mobile.twitter.com", "twitter.com")
+    if "twitter.com" in url and "?" in url:
+        url = url.split("?")[0]
     return url
 
-def fetch_video_info(url):
-    """Fetch both public & sensitive videos."""
-    ydl_opts = {
-        "quiet": True,
-        "skip_download": True,
-        "noplaylist": True,
-        "merge_output_format": "mp4",
-        "format": "bestvideo+bestaudio/best",
-        "extractor_args": {
-            "twitter": {
-                "include_ext_tw_video": True,
-                "include_ext_alt_text": False
-            }
-        },
-        "http_headers": {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    }
-
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        formats = info.get("formats", [])
-        videos = []
-        for f in formats:
-            if f.get("ext") == "mp4" and f.get("vcodec") != "none" and f.get("acodec") != "none":
-                size = f.get("filesize") or f.get("filesize_approx") or 0
-                height = f.get("height")
-                videos.append({
-                    "url": f.get("url"),
-                    "quality": f"{height}p" if height else "auto",
-                    "height": height,
-                    "filesize": size,
-                    "filesize_mb": round(size / 1024 / 1024, 2) if size else None,
-                    "bitrate": f.get("tbr", 0),
-                })
-        if not videos:
-            raise Exception("No downloadable video found")
-        videos.sort(key=lambda x: x["bitrate"], reverse=True)
-        return {"success": True, "title": info.get("title"), "videos": videos}
 
 # -----------------------------
-# DOWNLOAD ENDPOINT
+# DOWNLOAD (Twitter/X)
 # -----------------------------
 @app.route("/download", methods=["POST"])
 def download():
-    STATS["requests"] += 1
+
+    increment_stat("requests")
+
     data = request.get_json()
     url = data.get("url")
+
     if not url:
-        return jsonify({"success": False, "message": "No URL provided"}), 400
+        return jsonify({
+            "success": False,
+            "message": "No URL provided"
+        }), 400
 
     url = normalize_twitter_url(url)
-    now = time.time()
 
-    # CACHE HIT
-    if url in CACHE and now - CACHE[url]["time"] < CACHE_TTL:
-        STATS["cache_hits"] += 1
-        cached_data = CACHE[url]["data"]
-        cached_data["stats"] = {"cache_hits": STATS["cache_hits"]}
-        return jsonify(cached_data)
+    # Check cache first
+    cached = load_cache(url)
+    if cached:
+        increment_stat("cache_hits")
+        return jsonify(cached)
+
+    def extract_with_ytdlp(target_url):
+
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "noplaylist": True,
+            "format": "best",
+            "nocheckcertificate": True,
+            "retries": 10,
+            "fragment_retries": 10,
+            "http_headers": {
+                "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": "https://twitter.com/"
+            }
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(target_url, download=False)
+
+    def extract_fallback(target_url):
+
+        # Alternative extractor method
+        ydl_opts = {
+            "quiet": True,
+            "skip_download": True,
+            "nocheckcertificate": True,
+            "http_headers": {
+                "User-Agent":
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
+            }
+        }
+
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(target_url, download=False)
 
     try:
-        info = fetch_video_info(url)
-        info["stats"] = {"cache_hits": STATS["cache_hits"]}
-        CACHE[url] = {"time": now, "data": info}
-        return jsonify(info)
+
+        try:
+            info = extract_with_ytdlp(url)
+        except:
+            info = extract_fallback(url)
+
+        if not info:
+            return jsonify({
+                "success": False,
+                "message": "Extraction failed"
+            }), 500
+
+        video_url = None
+        height = 0
+
+        for f in info.get("formats", []):
+
+            if f.get("ext") == "mp4":
+
+                h = f.get("height", 0)
+
+                if h > height and f.get("url"):
+                    height = h
+                    video_url = f.get("url")
+
+        if not video_url:
+
+            return jsonify({
+                "success": False,
+                "message": "No video found"
+            }), 404
+
+        # VERY IMPORTANT: Use proxy URL for preview + download
+        proxy_preview = f"/proxy?url={video_url}"
+        proxy_download = f"/proxy?url={video_url}&download=1"
+
+        result = {
+
+            "success": True,
+
+            "title": info.get("title", "Twitter Video"),
+
+            "videos": [
+
+                {
+                    "url": proxy_download,
+                    "preview": proxy_preview,
+                    "quality": f"{height}p",
+                    "height": height
+                }
+
+            ]
+
+        }
+
+        save_cache(url, result)
+
+        return jsonify(result)
+
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+
+        import traceback
+        print(traceback.format_exc())
+
+        return jsonify({
+            "success": False,
+            "message": "Extraction failed"
+        }), 500
+
 
 # -----------------------------
-# PROXY FOR STREAMING
+# PROXY FOR STREAMING + DOWNLOAD + RENAME
 # -----------------------------
 @app.route("/proxy")
 def proxy():
+
     video_url = request.args.get("url")
+    download = request.args.get("download")
+
     if not video_url:
         return "No URL", 400
 
@@ -129,151 +388,90 @@ def proxy():
         "url": video_url,
         "timestamp": int(time.time())
     })
+
     if len(DOWNLOAD_LOGS) > 100:
         DOWNLOAD_LOGS.pop(0)
 
-    headers = {}
-    if "Range" in request.headers:
-        headers["Range"] = request.headers["Range"]
+    try:
 
-    r = requests.get(video_url, headers=headers, stream=True)
-    response_headers = {
-        "Content-Type": r.headers.get("Content-Type", "video/mp4"),
-        "Accept-Ranges": "bytes",
-    }
-    if "Content-Range" in r.headers:
-        response_headers["Content-Range"] = r.headers["Content-Range"]
+        headers = {}
 
-    return Response(r.iter_content(chunk_size=8192), status=r.status_code, headers=response_headers)
+        # IMPORTANT: allow streaming preview
+        if "Range" in request.headers:
+            headers["Range"] = request.headers["Range"]
 
-# -----------------------------
-# ADMIN DASHBOARD
-# -----------------------------
-@app.route("/admin")
-def admin():
-    password = request.args.get("password")
-    if password != ADMIN_PASSWORD:
-        return "Unauthorized", 401
+        r = requests.get(video_url, headers=headers, stream=True, timeout=60)
 
-    return render_template_string("""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Admin Dashboard</title>
-<style>
-body { font-family: 'Segoe UI', sans-serif; background:#0f1720; color:#fff; margin:0; padding:20px; }
-h1 { color:#1da1f2; text-align:center; margin-bottom:30px; }
-.stats { display:flex; flex-wrap:wrap; gap:20px; justify-content:center; margin-bottom:40px; }
-.card { background:#192734; padding:20px; border-radius:15px; min-width:150px; text-align:center; box-shadow:0 4px 15px rgba(0,0,0,0.5); transition: transform 0.2s, box-shadow 0.2s; }
-.card:hover { transform: translateY(-5px); box-shadow:0 8px 25px rgba(29,161,242,0.45); }
-.card h2 { margin:0 0 10px 0; font-size:18px; color:#fff; }
-.card p { margin:0; font-size:24px; font-weight:600; }
-button { display:block; margin:0 auto 40px auto; padding:12px 25px; border:none; border-radius:9999px; background:#1da1f2; color:#fff; cursor:pointer; font-weight:600; font-size:16px; transition:0.2s; }
-button:hover { background:#0d8ae5; transform:translateY(-2px); box-shadow:0 5px 15px rgba(29,161,242,0.35); }
-</style>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-</head>
-<body>
+        # Generate ToolifyX filename
+        random_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        filename = f"ToolifyX Downloader_{random_id}.mp4"
 
-<h1>Admin Dashboard</h1>
-
-<div class="stats">
-<div class="card"><h2>Total Requests</h2><p id="totalRequests">{{requests}}</p></div>
-<div class="card"><h2>Cache Hits</h2><p id="cacheHits">{{cache_hits}}</p></div>
-<div class="card"><h2>Total Downloads</h2><p id="totalDownloads">{{downloads}}</p></div>
-<div class="card"><h2>Unique IPs</h2><p id="uniqueIps">{{unique_ips|length}}</p></div>
-<div class="card"><h2>Videos Served</h2><p id="videosServed">{{videos_served}}</p></div>
-</div>
-
-<canvas id="requestsChart" height="200"></canvas>
-
-<h2 style="text-align:center;">Download Logs</h2>
-<table id="logsTable">
-<thead>
-<tr><th>#</th><th>IP Address</th><th>Video URL</th><th>Timestamp</th></tr>
-</thead>
-<tbody></tbody>
-</table>
-
-<button onclick="fetchStats()">Refresh Stats</button>
-
-<script>
-const BACKEND = location.origin;
-let logs = [];
-
-const ctx = document.getElementById('requestsChart').getContext('2d');
-const requestsChart = new Chart(ctx, {
-    type: 'line',
-    data: { labels: [], datasets: [{ label: 'Requests Over Time', data: [], borderColor: '#1da1f2', backgroundColor: 'rgba(29,161,242,0.2)', tension:0.3, fill:true }] },
-    options: { responsive:true, plugins:{legend:{display:true}}, scales:{y:{beginAtZero:true}} }
-});
-
-async function fetchStats(){
-    try{
-        const res = await fetch(`${BACKEND}/stats`);
-        const data = await res.json();
-
-        document.querySelector("#totalRequests").textContent = data.requests || 0;
-        document.querySelector("#cacheHits").textContent = data.cache_hits || 0;
-        document.querySelector("#totalDownloads").textContent = data.downloads || 0;
-        document.querySelector("#uniqueIps").textContent = data.unique_ips ? data.unique_ips.length : 0;
-        document.querySelector("#videosServed").textContent = data.videos_served || 0;
-
-        const now = new Date().toLocaleTimeString();
-        requestsChart.data.labels.push(now);
-        requestsChart.data.datasets[0].data.push(data.requests || 0);
-        if(requestsChart.data.labels.length>10){
-            requestsChart.data.labels.shift();
-            requestsChart.data.datasets[0].data.shift();
-        }
-        requestsChart.update();
-
-        const tbody = document.querySelector('#logsTable tbody');
-        tbody.innerHTML = '';
-        if(data.download_logs && data.download_logs.length){
-            data.download_logs.slice(-10).forEach((log,i)=>{
-                const tr = document.createElement('tr');
-                tr.innerHTML = `<td>${i+1}</td>
-                                <td>${log.ip}</td>
-                                <td><a href="${log.url}" target="_blank">${log.url}</a></td>
-                                <td>${new Date(log.timestamp*1000).toLocaleString()}</td>`;
-                tbody.appendChild(tr);
-            });
+        response_headers = {
+            "Content-Type": r.headers.get("Content-Type", "video/mp4"),
+            "Accept-Ranges": "bytes"
         }
 
-    } catch(e){
-        alert("Failed to fetch stats/logs");
-    }
-}
+        # CRITICAL: support video seeking
+        if "Content-Range" in r.headers:
+            response_headers["Content-Range"] = r.headers["Content-Range"]
 
-fetchStats();
-</script>
-</body>
-</html>
-""", **STATS)
+        if "Content-Length" in r.headers:
+            response_headers["Content-Length"] = r.headers["Content-Length"]
+
+        # THIS enables rename when downloading
+        if download == "1":
+            response_headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+        else:
+            # THIS enables preview but still keeps ToolifyX name
+            response_headers["Content-Disposition"] = f'inline; filename="{filename}"'
+
+        return Response(
+            r.iter_content(chunk_size=8192),
+            status=r.status_code,
+            headers=response_headers
+        )
+
+    except Exception as e:
+        print(e)
+        return "Proxy error", 500
+
+
 
 # -----------------------------
-# STATS ENDPOINT
+# HOME / STATS
 # -----------------------------
+@app.route("/")
+def home():
+    return jsonify({"status":"ok","service":"ToolifyX Downloader API","version":"1.0"})
+
+
 @app.route("/stats")
 def stats():
-    return jsonify({
-        "requests": STATS["requests"],
-        "cache_hits": STATS["cache_hits"],
-        "downloads": STATS["downloads"],
-        "unique_ips": list(STATS["unique_ips"]),
-        "videos_served": STATS["videos_served"],
-        "download_logs": DOWNLOAD_LOGS
-    })
+    return jsonify(get_stats())
+
 
 # -----------------------------
-# RUN APP
+# ADMIN RESET
 # -----------------------------
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+@app.route("/admin/reset", methods=["POST"])
+def reset():
+    password = request.json.get("password")
+    if password != ADMIN_PASSWORD:
+        return jsonify({"success":False}), 401
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE stats SET requests=0, cache_hits=0, downloads=0, videos_served=0, mb_served=0")
+    c.execute("DELETE FROM ips")
+    c.execute("DELETE FROM logs")
+    c.execute("DELETE FROM daily")
+    conn.commit()
+    conn.close()
+    return jsonify({"success":True})
+
+
+# -----------------------------
+# RUN
+# -----------------------------
+if __name__=="__main__":
+    port = int(os.environ.get("PORT",5000))
     app.run(host="0.0.0.0", port=port)
-
-
- 
