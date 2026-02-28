@@ -371,28 +371,66 @@ def download():
 # -----------------------------
 @app.route("/proxy")
 def proxy():
+
     url = request.args.get("url")
     download = request.args.get("download")
+
     if not url:
         return "Missing URL", 400
+
     try:
-        r = requests.get(url, stream=True, timeout=30)
+
+        headers_req = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "*/*",
+            "Accept-Encoding": "identity",
+            "Connection": "keep-alive",
+        }
+
+        r = requests.get(
+            url,
+            headers=headers_req,
+            stream=True,
+            timeout=30
+        )
+
         file_size = r.headers.get("Content-Length")
+
         mb = 0
         if file_size:
-            mb = int(file_size)/1024/1024
+            mb = int(file_size) / 1024 / 1024
             increment_stat("mb_served", mb)
-            increment_stat("downloads",1)
+            increment_stat("downloads", 1)
             increment_daily(mb)
-        headers = {"Content-Type":"video/mp4","Accept-Ranges":"bytes"}
-        random_id = ''.join(random.choices(string.ascii_uppercase + string.digits,k=6))
+
+        # Generate filename
+        random_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
         filename = f"ToolifyX Downloader_{random_id}.mp4"
-        headers["Content-Disposition"] = f"attachment; filename={filename}" if download=="1" else f"inline; filename={filename}"
+
+        headers_res = {
+            "Content-Type": "video/mp4",
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+
         if file_size:
-            headers["Content-Length"] = file_size
-        return Response(r.iter_content(chunk_size=8192), headers=headers)
+            headers_res["Content-Length"] = file_size
+
+        if download == "1":
+            headers_res["Content-Disposition"] = f"attachment; filename={filename}"
+        else:
+            headers_res["Content-Disposition"] = f"inline; filename={filename}"
+
+        return Response(
+            r.iter_content(chunk_size=8192),
+            headers=headers_res,
+            status=200
+        )
+
     except Exception as e:
-        return str(e), 500
+        print(e)
+        return "Proxy failed", 500 
 
 
 # -----------------------------
