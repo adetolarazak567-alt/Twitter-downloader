@@ -380,64 +380,62 @@ def proxy():
 
     try:
 
-        range_header = request.headers.get("Range", None)
+        range_header = request.headers.get("Range")
 
-        headers_req = {
+        headers = {
             "User-Agent": "Mozilla/5.0",
-            "Accept": "*/*",
             "Referer": "https://twitter.com/",
-            "Connection": "keep-alive",
         }
 
         if range_header:
-            headers_req["Range"] = range_header
+            headers["Range"] = range_header
 
-        r = requests.get(
+        upstream = requests.get(
             url,
-            headers=headers_req,
+            headers=headers,
             stream=True,
-            timeout=30
+            allow_redirects=True,
+            timeout=60
         )
 
-        file_size = r.headers.get("Content-Length")
-        content_range = r.headers.get("Content-Range")
+        def generate():
+            for chunk in upstream.iter_content(chunk_size=8192):
+                if chunk:
+                    yield chunk
 
-        # stats tracking
-        if file_size and not range_header:
-            mb = int(file_size) / 1024 / 1024
-            increment_stat("mb_served", mb)
-            increment_stat("downloads", 1)
-            increment_daily(mb)
+        response_headers = {}
+
+        # copy required headers EXACTLY
+        if upstream.headers.get("Content-Type"):
+            response_headers["Content-Type"] = upstream.headers.get("Content-Type")
+
+        if upstream.headers.get("Content-Length"):
+            response_headers["Content-Length"] = upstream.headers.get("Content-Length")
+
+        if upstream.headers.get("Content-Range"):
+            response_headers["Content-Range"] = upstream.headers.get("Content-Range")
+
+        if upstream.headers.get("Accept-Ranges"):
+            response_headers["Accept-Ranges"] = upstream.headers.get("Accept-Ranges")
+        else:
+            response_headers["Accept-Ranges"] = "bytes"
 
         # filename
-        random_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-        filename = f"ToolifyX Downloader_{random_id}.mp4"
-
-        headers_res = {
-            "Content-Type": "video/mp4",
-            "Accept-Ranges": "bytes",
-            "Connection": "keep-alive",
-        }
-
-        if file_size:
-            headers_res["Content-Length"] = file_size
-
-        if content_range:
-            headers_res["Content-Range"] = content_range
+        filename = "ToolifyX_video.mp4"
 
         if download == "1":
-            headers_res["Content-Disposition"] = f"attachment; filename={filename}"
+            response_headers["Content-Disposition"] = f"attachment; filename={filename}"
         else:
-            headers_res["Content-Disposition"] = f"inline; filename={filename}"
+            response_headers["Content-Disposition"] = f"inline; filename={filename}"
 
         return Response(
-            r.iter_content(chunk_size=8192),
-            status=r.status_code,
-            headers=headers_res
+            generate(),
+            status=upstream.status_code,
+            headers=response_headers
         )
 
     except Exception as e:
-        print(e)
+        print("Proxy error:", e)
         return "Proxy failed", 500
 
 
