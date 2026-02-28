@@ -393,14 +393,26 @@ def proxy():
         headers["Range"] = request.headers["Range"]
 
     r = requests.get(video_url, headers=headers, stream=True)
+
+    # ✅ ToolifyX rename added here
+    import random, string
+    random_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    filename = f"ToolifyX Downloader_{random_id}.mp4"
+
     response_headers = {
         "Content-Type": r.headers.get("Content-Type", "video/mp4"),
         "Accept-Ranges": "bytes",
+        "Content-Disposition": f'attachment; filename="{filename}"'
     }
+
     if "Content-Range" in r.headers:
         response_headers["Content-Range"] = r.headers["Content-Range"]
 
-    return Response(r.iter_content(chunk_size=8192), status=r.status_code, headers=response_headers)
+    return Response(
+        r.iter_content(chunk_size=8192),
+        status=r.status_code,
+        headers=response_headers
+    )
 
 
 
