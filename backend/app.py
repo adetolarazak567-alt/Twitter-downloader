@@ -210,6 +210,25 @@ def send_newsletter():
 
     # Respond immediately without waiting
     return jsonify({"success": True, "message": f"Started sending {len(emails)} emails in background"})
+
+# -----------------------------
+# ADMIN FETCH EMAILS
+# -----------------------------
+@app.route("/admin/get-emails", methods=["POST"])
+def get_emails():
+    data = request.get_json()
+    password = data.get("password")
+
+    if password != ADMIN_PASSWORD:
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT email, timestamp FROM emails")
+    emails = [{"email": e[0], "timestamp": e[1]} for e in c.fetchall()]
+    conn.close()
+
+    return jsonify({"success": True, "emails": emails})
 # -----------------------------
 # URL NORMALIZER
 # -----------------------------
