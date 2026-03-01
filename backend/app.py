@@ -45,9 +45,8 @@ app = Flask(__name__)
 CORS(app)
 
 DB_FILE = "stats.db"
-ADMIN_PASSWORD = "razzyadminX567"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 CACHE_TTL = 86400
-
 
 # -----------------------------
 # DATABASE INIT
