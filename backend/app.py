@@ -1,3 +1,4 @@
+import json
 from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 import yt_dlp
@@ -8,6 +9,37 @@ import sqlite3
 import random
 import string
 from datetime import datetime
+
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from dotenv import load_dotenv
+import threading
+
+load_dotenv()  # load .env variables
+
+EMAIL_HOST = os.getenv("EMAIL_HOST")        # e.g., smtp.gmail.com
+EMAIL_PORT = int(os.getenv("EMAIL_PORT"))   # e.g., 587
+EMAIL_USER = os.getenv("EMAIL_USER")        # your email
+EMAIL_PASS = os.getenv("EMAIL_PASS")        # app password
+
+def send_email(to_email, subject, message):
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_USER
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(message, 'plain'))
+
+        server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
+        server.starttls()
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.send_message(msg)
+        server.quit()
+        return True
+    except Exception as e:
+        print("EMAIL ERROR:", e)
+        return False
 
 app = Flask(__name__)
 CORS(app)
@@ -80,15 +112,12 @@ def increment_stat(field, amount=1):
 # CACHE
 # -----------------------------
 def save_cache(url, data):
-
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
     c.execute(
         "INSERT OR REPLACE INTO video_cache(url,data,timestamp) VALUES(?,?,?)",
-        (url, str(data), int(time.time()))
+        (url, json.dumps(data), int(time.time()))
     )
-
     conn.commit()
     conn.close()
 
@@ -114,15 +143,14 @@ def load_cache(url):
     if time.time() - timestamp > CACHE_TTL:
         return None
 
-    return eval(data)
+    return json.loads(data)
 
 
 # -----------------------------
-# EMAIL API
+# EMAIL API (async welcome email)
 # -----------------------------
 @app.route("/save-email", methods=["POST"])
 def save_email():
-
     data = request.get_json()
     email = data.get("email")
 
@@ -131,7 +159,6 @@ def save_email():
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
     try:
         c.execute(
             "INSERT OR IGNORE INTO emails(email,timestamp) VALUES(?,?)",
@@ -140,40 +167,50 @@ def save_email():
         conn.commit()
     except:
         pass
-
     conn.close()
 
+    # ✅ Send welcome email in a separate thread (non-blocking)
+    subject = "Welcome to ToolifyX!"
+    message = (
+        "Hi there,\n\n"
+        "Thanks for subscribing! You'll now receive updates whenever we add new tools.\n\n"
+        "— Team ToolifyX"
+    )
+    threading.Thread(target=send_email, args=(email, subject, message)).start()
+
+    # Return success immediately
     return jsonify({"success": True})
 
+    
 
-@app.route("/admin/emails", methods=["POST"])
-def get_emails():
-
-    password = request.json.get("password")
+# -----------------------------
+# EMAIL ADMIN SENDER (background)
+# -----------------------------
+@app.route("/admin/send-newsletter", methods=["POST"])
+def send_newsletter():
+    data = request.get_json()
+    password = data.get("password")
+    subject = data.get("subject")
+    message = data.get("message")
 
     if password != ADMIN_PASSWORD:
-        return jsonify({"success": False}), 401
+        return jsonify({"success": False, "message": "Unauthorized"}), 401
 
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-
-    c.execute("SELECT email,timestamp FROM emails ORDER BY id DESC")
-    emails = c.fetchall()
-
+    c.execute("SELECT email FROM emails")
+    emails = [e[0] for e in c.fetchall()]
     conn.close()
 
-    return jsonify({
-        "success": True,
-        "emails": [
-            {
-                "email": e[0],
-                "timestamp": e[1]
-            }
-            for e in emails
-        ]
-    })
+    # Send emails in a separate thread (non-blocking)
+    def send_all_emails():
+        for email in emails:
+            send_email(email, subject, message)
 
+    threading.Thread(target=send_all_emails).start()
 
+    # Respond immediately without waiting
+    return jsonify({"success": True, "message": f"Started sending {len(emails)} emails in background"})
 # -----------------------------
 # URL NORMALIZER
 # -----------------------------
@@ -376,4 +413,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port
-    )
+    ) 
