@@ -214,7 +214,7 @@ def send_newsletter():
 # -----------------------------
 # ADMIN FETCH EMAILS
 # -----------------------------
-@app.route("/admin/get-emails", methods=["POST"])
+@app.route("/admin/emails", methods=["POST"])
 def get_emails():
     data = request.get_json()
     password = data.get("password")
