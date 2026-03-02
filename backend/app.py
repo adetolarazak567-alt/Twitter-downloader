@@ -16,16 +16,6 @@ from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 import threading
 
-import os
-
-# -----------------------------
-# DATABASE PATH (persistent)
-# -----------------------------
-PERSISTENT_DIR = "/mnt/data"
-DB_FILE = os.path.join(PERSISTENT_DIR, "stats.db")
-
-# Ensure the persistent directory exists
-os.makedirs(PERSISTENT_DIR, exist_ok=True)
 
 load_dotenv()  # load .env variables
 
@@ -55,6 +45,7 @@ def send_email(to_email, subject, message):
 app = Flask(__name__)
 CORS(app)
 
+DB_FILE = "stats.db"
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 CACHE_TTL = 86400
 
