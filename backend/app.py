@@ -16,6 +16,17 @@ from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 import threading
 
+import os
+
+# -----------------------------
+# DATABASE PATH (persistent)
+# -----------------------------
+PERSISTENT_DIR = "/mnt/data"
+DB_FILE = os.path.join(PERSISTENT_DIR, "stats.db")
+
+# Ensure the persistent directory exists
+os.makedirs(PERSISTENT_DIR, exist_ok=True)
+
 load_dotenv()  # load .env variables
 
 EMAIL_HOST = os.getenv("EMAIL_HOST")        # e.g., smtp.gmail.com
@@ -44,7 +55,6 @@ def send_email(to_email, subject, message):
 app = Flask(__name__)
 CORS(app)
 
-DB_FILE = "/data/stats.db"
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 CACHE_TTL = 86400
 
@@ -227,56 +237,7 @@ def send_newsletter():
     threading.Thread(target=send_all_emails).start()
 
     return jsonify({"success": True, "message": f"Started sending {len(emails)} emails in background"})
-# -----------------------------
-# ADMIN FETCH EMAILS
-# -----------------------------
-@app.route("/save-email", methods=["POST"])
-def save_email():
-    data = request.get_json()
-    email = data.get("email")
 
-    if not email:
-        return jsonify({"success": False})
-
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    try:
-        c.execute(
-            "INSERT OR IGNORE INTO emails(email,timestamp) VALUES(?,?)",
-            (email, int(time.time()))
-        )
-        conn.commit()
-    except Exception as e:
-        print("DB ERROR:", e)
-    conn.close()
-
-    # ✅ Send welcome email in background
-    subject = "Welcome to ToolifyX!"
-    message = (
-        "Hi there,\n\n"
-        "Thanks for subscribing! You'll now receive updates whenever we add new tools.\n\n"
-        "— Team ToolifyX"
-    )
-    threading.Thread(target=send_email, args=(email, subject, message)).start()
-
-    return jsonify({"success": True})
-
-
-@app.route("/admin/emails", methods=["POST"])
-def get_emails():
-    data = request.get_json()
-    password = data.get("password")
-
-    if password != ADMIN_PASSWORD:
-        return jsonify({"success": False, "message": "Unauthorized"}), 401
-
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT email, timestamp FROM emails")
-    emails = [{"email": e[0], "timestamp": e[1]} for e in c.fetchall()]
-    conn.close()
-
-    return jsonify({"success": True, "emails": emails})
 # -----------------------------
 # URL NORMALIZER
 # -----------------------------
@@ -479,4 +440,4 @@ if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
         port=port
-    ) 
+    )
