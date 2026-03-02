@@ -44,7 +44,7 @@ def send_email(to_email, subject, message):
 app = Flask(__name__)
 CORS(app)
 
-DB_FILE = "stats.db"
+DB_FILE = "/data/stats.db"
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 CACHE_TTL = 86400
 
@@ -201,19 +201,67 @@ def send_newsletter():
     emails = [e[0] for e in c.fetchall()]
     conn.close()
 
-    # Send emails in a separate thread (non-blocking)
+    if not emails:
+        return jsonify({"success": False, "message": "No subscribers found"})
+
+    # Background thread for sending emails
     def send_all_emails():
         for email in emails:
-            send_email(email, subject, message)
+            try:
+                msg = MIMEMultipart()
+                msg['From'] = "ToolifyX <toolifyx567@gmail.com>"  # ✅ Updated From
+                msg['To'] = email
+                msg['Subject'] = subject
+                msg.attach(MIMEText(message, 'plain'))  # or 'html' if you want HTML
+
+                server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
+                server.starttls()
+                server.login(EMAIL_USER, EMAIL_PASS)
+                server.send_message(msg)
+                server.quit()
+
+                print(f"✅ Sent to {email}")
+            except Exception as e:
+                print(f"❌ Failed to send to {email}: {e}")
 
     threading.Thread(target=send_all_emails).start()
 
-    # Respond immediately without waiting
     return jsonify({"success": True, "message": f"Started sending {len(emails)} emails in background"})
-
 # -----------------------------
 # ADMIN FETCH EMAILS
 # -----------------------------
+@app.route("/save-email", methods=["POST"])
+def save_email():
+    data = request.get_json()
+    email = data.get("email")
+
+    if not email:
+        return jsonify({"success": False})
+
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    try:
+        c.execute(
+            "INSERT OR IGNORE INTO emails(email,timestamp) VALUES(?,?)",
+            (email, int(time.time()))
+        )
+        conn.commit()
+    except Exception as e:
+        print("DB ERROR:", e)
+    conn.close()
+
+    # ✅ Send welcome email in background
+    subject = "Welcome to ToolifyX!"
+    message = (
+        "Hi there,\n\n"
+        "Thanks for subscribing! You'll now receive updates whenever we add new tools.\n\n"
+        "— Team ToolifyX"
+    )
+    threading.Thread(target=send_email, args=(email, subject, message)).start()
+
+    return jsonify({"success": True})
+
+
 @app.route("/admin/emails", methods=["POST"])
 def get_emails():
     data = request.get_json()
