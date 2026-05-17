@@ -169,7 +169,7 @@ def save_email():
         pass
     conn.close()
 
-    # ✅ Send welcome email in a separate thread (non-blocking)
+    # Send welcome email in a separate thread (non-blocking)
     subject = "Welcome to ToolifyX!"
     message = (
         "Hi there,\n\n"
@@ -181,7 +181,7 @@ def save_email():
     # Return success immediately
     return jsonify({"success": True})
 
-    
+
 
 # -----------------------------
 # EMAIL ADMIN SENDER (background)
@@ -210,10 +210,10 @@ def send_newsletter():
         for email in emails:
             try:
                 msg = MIMEMultipart()
-                msg['From'] = "ToolifyX <toolifyx567@gmail.com>"  # ✅ Updated From
+                msg['From'] = "ToolifyX <toolifyx567@gmail.com>"
                 msg['To'] = email
                 msg['Subject'] = subject
-                msg.attach(MIMEText(message, 'plain'))  # or 'html' if you want HTML
+                msg.attach(MIMEText(message, 'plain'))
 
                 server = smtplib.SMTP(EMAIL_HOST, EMAIL_PORT)
                 server.starttls()
@@ -221,9 +221,9 @@ def send_newsletter():
                 server.send_message(msg)
                 server.quit()
 
-                print(f"✅ Sent to {email}")
+                print(f"Sent to {email}")
             except Exception as e:
-                print(f"❌ Failed to send to {email}: {e}")
+                print(f"Failed to send to {email}: {e}")
 
     threading.Thread(target=send_all_emails).start()
 
@@ -350,59 +350,83 @@ def download():
 
 
 # -----------------------------
-# PROXY STREAM + RENAME
+# PROXY STREAM + RESUMABLE DOWNLOAD
 # -----------------------------
 @app.route("/proxy")
 def proxy():
 
     video_url = request.args.get("url")
+    mode = request.args.get("mode", "download")
 
     if not video_url:
         return "No URL", 400
 
     increment_stat("downloads")
 
-    headers = {}
+    try:
+        # Parse Range header from client (e.g., "bytes=0-1023" or "bytes=1024-")
+        range_header = request.headers.get("Range")
 
-    if "Range" in request.headers:
-        headers["Range"] = request.headers["Range"]
+        # Build request headers to forward to source
+        source_headers = {}
+        if range_header:
+            source_headers["Range"] = range_header
 
-    r = requests.get(
-        video_url,
-        headers=headers,
-        stream=True
-    )
-
-    random_id = ''.join(
-        random.choices(
-            string.ascii_uppercase +
-            string.digits,
-            k=6
+        # Request from source with range support
+        r = requests.get(
+            video_url,
+            headers=source_headers,
+            stream=True,
+            timeout=15
         )
-    )
 
-    filename = f"ToolifyX Downloader_{random_id}.mp4"
+        random_id = ''.join(
+            random.choices(
+                string.ascii_uppercase +
+                string.digits,
+                k=6
+            )
+        )
 
-    response_headers = {
+        filename = f"ToolifyX Downloader_{random_id}.mp4"
 
-        "Content-Type": "video/mp4",
+        # Determine response status
+        status_code = 206 if r.status_code == 206 else 200
 
-        "Accept-Ranges": "bytes",
+        # Build response headers
+        response_headers = {
+            "Content-Type": r.headers.get("Content-Type", "video/mp4"),
+            "Accept-Ranges": "bytes",  # Tell client we support resume
+        }
 
-        "Content-Disposition":
-        f'attachment; filename="{filename}"'
-    }
+        # Forward Content-Range if source sent it (partial content)
+        if "Content-Range" in r.headers:
+            response_headers["Content-Range"] = r.headers["Content-Range"]
 
-    if "Content-Range" in r.headers:
+        # Forward Content-Length (either full or partial)
+        if "Content-Length" in r.headers:
+            response_headers["Content-Length"] = r.headers["Content-Length"]
 
-        response_headers["Content-Range"] = \
-        r.headers["Content-Range"]
+        # Content-Disposition based on mode
+        if mode == "preview":
+            response_headers["Content-Disposition"] = f'inline; filename="{filename}"'
+        else:
+            response_headers["Content-Disposition"] = f'attachment; filename="{filename}"'
 
-    return Response(
-        r.iter_content(chunk_size=8192),
-        status=r.status_code,
-        headers=response_headers
-    )
+        # Stream generator with larger chunks for speed
+        def generate():
+            for chunk in r.iter_content(chunk_size=262144):  # 256KB chunks
+                if chunk:
+                    yield chunk
+
+        return Response(
+            generate(),
+            status=status_code,
+            headers=response_headers
+        )
+
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 # -----------------------------
