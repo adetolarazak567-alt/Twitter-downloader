@@ -249,24 +249,9 @@ def normalize_twitter_url(url):
 
 
 # -----------------------------
-# DOWNLOAD INFO
+# EXTRACT VIDEO (re-usable)
 # -----------------------------
-@app.route("/download", methods=["POST"])
-def download():
-    # count the request
-    increment_stat("requests")
-
-    data = request.get_json()
-    url = data.get("url")
-    if not url:
-        return jsonify({"success": False, "message": "No URL provided"}), 400
-
-    # normalize and check cache
-    url = normalize_twitter_url(url)
-    cached = load_cache(url)
-    if cached:
-        increment_stat("cache_hits")
-        return jsonify(cached)
+def extract_video_info(url):
 
     try:
         ydl_opts = {
@@ -284,36 +269,30 @@ def download():
             info = ydl.extract_info(url, download=False)
 
         if not info:
-            return jsonify({"success": False, "message": "Failed to extract video info"}), 500
+            return None
 
         # desired qualities: 480, 720, 1080, 2160 (2k/4k)
         allowed_heights = [480, 720, 1080, 2160]
         added = set()
         videos = []
 
-        # iterate formats and map each to the closest allowed height (one per allowed height)
+        # iterate formats and map each to the closest allowed height
         for f in info.get("formats", []):
-            # require an mp4-like container (keeps compatibility with your frontend)
             if f.get("ext") != "mp4":
                 continue
 
-            # use explicit height if available
             h = f.get("height")
             if not h:
-                # some formats don't have height; skip them (keeps results reliable)
                 continue
 
-            # map to closest allowed height
             closest = min(allowed_heights, key=lambda x: abs(x - h))
 
-            # only add one format per allowed height
             if closest in added:
                 continue
 
             size = f.get("filesize") or f.get("filesize_approx") or 0
             filesize_mb = round(size / 1024 / 1024, 2) if size else None
 
-            # friendly label: treat 2160 as the "2k/4k" option per your request
             quality_label = "2k/4k (2160p)" if closest == 2160 else f"{closest}p"
 
             videos.append({
@@ -327,44 +306,99 @@ def download():
             added.add(closest)
 
         if not videos:
-            return jsonify({"success": False, "message": "No downloadable mp4 found"}), 404
+            return None
 
-        # sort from highest -> lowest so frontend picks best first
+        # sort from highest -> lowest
         videos.sort(key=lambda x: x["height"], reverse=True)
 
-        result = {
+        return {
             "success": True,
             "title": info.get("title") or "Untitled Video",
+            "author": info.get("uploader", ""),
+            "thumbnail": info.get("thumbnail", ""),
             "videos": videos
         }
 
-        # cache the result
-        save_cache(url, result)
-
-        return jsonify(result)
-
     except Exception as e:
         import traceback
-        print("DOWNLOAD ERROR:", traceback.format_exc())
-        return jsonify({"success": False, "message": "Extraction failed"}), 500
+        print("EXTRACTION ERROR:", traceback.format_exc())
+        return None
 
 
 # -----------------------------
-# PROXY STREAM + RESUMABLE DOWNLOAD
+# DOWNLOAD INFO
+# -----------------------------
+@app.route("/download", methods=["POST"])
+def download():
+    # count the request
+    increment_stat("requests")
+
+    data = request.get_json()
+    url = data.get("url")
+    if not url:
+        return jsonify({"success": False, "message": "No URL provided"}), 400
+
+    # normalize URL
+    url = normalize_twitter_url(url)
+
+    # check cache first
+    cached = load_cache(url)
+    if cached:
+        increment_stat("cache_hits")
+        # Add videoId for re-fetch support
+        cached["videoId"] = url
+        return jsonify(cached)
+
+    result = extract_video_info(url)
+
+    if not result:
+        return jsonify({"success": False, "message": "Extraction failed"}), 500
+
+    # Add videoId for re-fetch support
+    result["videoId"] = url
+
+    # cache the result
+    save_cache(url, result)
+
+    return jsonify(result)
+
+
+# -----------------------------
+# PROXY STREAM + RESUMABLE DOWNLOAD (RE-FETCH FRESH URL)
 # -----------------------------
 @app.route("/proxy")
 def proxy():
 
+    # Support both old "url" param and new "videoId" param
     video_url = request.args.get("url")
+    video_id = request.args.get("videoId")
     mode = request.args.get("mode", "download")
+    quality = request.args.get("quality", "")  # e.g. "720p" or "1080p"
+
+    # If videoId provided, re-extract fresh URLs
+    if video_id and not video_url:
+        result = extract_video_info(video_id)
+        if result:
+            videos = result.get("videos", [])
+            # If quality specified, find matching video
+            if quality:
+                for v in videos:
+                    if v["quality"] == quality:
+                        video_url = v["url"]
+                        break
+            # Fallback to best quality
+            if not video_url and videos:
+                video_url = videos[0]["url"]
+        else:
+            return jsonify({"success": False, "message": "Could not re-fetch video. Link may be expired or invalid."}), 500
 
     if not video_url:
-        return "No URL", 400
+        return jsonify({"success": False, "message": "No video URL"}), 400
 
     increment_stat("downloads")
 
     try:
-        # Parse Range header from client (e.g., "bytes=0-1023" or "bytes=1024-")
+        # Parse Range header from client
         range_header = request.headers.get("Range")
 
         # Build request headers to forward to source
@@ -396,14 +430,14 @@ def proxy():
         # Build response headers
         response_headers = {
             "Content-Type": r.headers.get("Content-Type", "video/mp4"),
-            "Accept-Ranges": "bytes",  # Tell client we support resume
+            "Accept-Ranges": "bytes",
         }
 
-        # Forward Content-Range if source sent it (partial content)
+        # Forward Content-Range if source sent it
         if "Content-Range" in r.headers:
             response_headers["Content-Range"] = r.headers["Content-Range"]
 
-        # Forward Content-Length (either full or partial)
+        # Forward Content-Length
         if "Content-Length" in r.headers:
             response_headers["Content-Length"] = r.headers["Content-Length"]
 
